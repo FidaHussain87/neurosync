@@ -204,17 +204,59 @@ Zeros are normal — you haven't used it yet!
 
 ### Make Claude use NeuroSync automatically
 
-NeuroSync is connected, but Claude won't use it proactively unless you tell it how. Add the minimal protocol to your project's `CLAUDE.md`:
+NeuroSync is connected, but Claude won't use it proactively unless you tell it how. You need to add the protocol to a file Claude Code reads. There are three options — pick the one that fits your situation:
+
+#### Option A: User-level (recommended — all projects, no git noise)
+
+Place the protocol in your **user-level** `CLAUDE.md`. This lives outside any git repo, applies to every project on your machine, and never shows up in `git diff`:
 
 ```bash
-# Option A: Generate and append
-neurosync generate-protocol >> CLAUDE.md
-
-# Option B: Generate a full CLAUDE.md for your project
-neurosync generate-protocol --project "My App" > CLAUDE.md
+neurosync generate-protocol >> ~/.claude/CLAUDE.md
 ```
 
-Or copy-paste the minimal protocol manually:
+This is the best option when:
+- You're the only one using NeuroSync on the team
+- You want memory across all your projects without touching each repo
+- The project's `CLAUDE.md` is shared/tracked and you don't want to modify it
+
+#### Option B: Project-level, git-tracked (team-shared)
+
+Append to your project's `CLAUDE.md` so the whole team gets the protocol:
+
+```bash
+neurosync generate-protocol >> CLAUDE.md
+```
+
+Use this when the entire team uses NeuroSync.
+
+#### Option C: Project-level, git-ignored (personal, per-project)
+
+Create a `CLAUDE.local.md` in the project root. Claude Code reads it alongside `CLAUDE.md`, but you add it to `.gitignore` so it stays personal:
+
+```bash
+neurosync generate-protocol > CLAUDE.local.md
+echo "CLAUDE.local.md" >> .gitignore
+```
+
+Use this when you want NeuroSync only in specific projects and don't want to modify the shared `CLAUDE.md`, but also don't want it globally via `~/.claude/CLAUDE.md`.
+
+> **Note:** If `CLAUDE.local.md` is a new entry in `.gitignore`, the `.gitignore` change itself will show in `git diff`. If you can't modify `.gitignore` either, use Option A (user-level) instead.
+
+#### How Claude Code loads instructions (precedence)
+
+Claude Code reads instruction files in this order (later files take precedence):
+
+| Scope | Location | Git-tracked? |
+|-------|----------|-------------|
+| Project | `./CLAUDE.md` or `./.claude/CLAUDE.md` | Yes — shared with team |
+| User | `~/.claude/CLAUDE.md` | No — your home directory |
+| Local | `./CLAUDE.local.md` | No — if added to `.gitignore` |
+
+All files are loaded and concatenated. You don't need to pick just one — they stack.
+
+#### The protocol (for manual copy-paste)
+
+If you prefer to copy-paste instead of using `generate-protocol`:
 
 ```markdown
 ## NeuroSync Memory Protocol
@@ -253,8 +295,6 @@ Call `neurosync_record` with structured episodes when the session ends. Write ca
 - **Passive git observation** — file changes and commits are recorded as low-weight episodes automatically
 - **Dynamic hints** — tool responses include contextual guidance
 ```
-
-Copy-paste this into every project's `CLAUDE.md` where you want Claude to build up memory.
 
 ---
 
