@@ -1,0 +1,53 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "neurosync"
+dynamic = ["version"]
+description = "Developer-focused memory MCP server — episodic, semantic, and working memory for AI coding agents"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.9"
+authors = [{ name = "NeuroSync Contributors" }]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Topic :: Software Development :: Libraries",
+]
+dependencies = [
+    "chromadb>=0.5.0",
+    "pyyaml>=6.0,<7",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "ruff>=0.4.0",
+]
+
+[project.scripts]
+neurosync = "neurosync.cli:main"
+
+[tool.hatch.version]
+path = "neurosync/version.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["neurosync"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "slow: marks tests as slow",
+    "integration: marks integration tests",
+]
+
+[tool.coverage.run]
+source = ["neurosync"]
+omit = ["neurosync/starter_packs/*.py"]
+
+[tool.coverage.report]
+fail_under = 85
+show_missing = true

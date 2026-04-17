@@ -1,0 +1,27 @@
+name: Cloud Infrastructure
+description: Patterns for multi-cloud infrastructure management
+theories:
+  - content: "Provider adapters should be thin API wrappers — no business logic, just request/response shaping with explicit API versions"
+    scope: domain
+    scope_qualifier: cloud
+    confidence: 0.85
+  - content: "Use router/facade pattern for multi-provider systems — callers use stable method names, routers dispatch to provider-specific adapters"
+    scope: domain
+    scope_qualifier: cloud
+    confidence: 0.8
+  - content: "Always include transaction_uuid in cloud operations — enables idempotency checking and audit trail correlation"
+    scope: domain
+    scope_qualifier: cloud
+    confidence: 0.75
+  - content: "Private endpoint DNS setup requires sequential steps: approve connection, create DNS zone, create VNet link, attach zone group, then A-record"
+    scope: domain
+    scope_qualifier: azure
+    confidence: 0.7
+  - content: "Scanner sync must be eventually consistent — handle partial failures gracefully and maintain idempotency across runs"
+    scope: domain
+    scope_qualifier: cloud
+    confidence: 0.8
+  - content: "Separate ISM (provider-specific atomic ops) from ISMR (routing facades) — services call ISMR, never ISM directly"
+    scope: domain
+    scope_qualifier: cloud
+    confidence: 0.85

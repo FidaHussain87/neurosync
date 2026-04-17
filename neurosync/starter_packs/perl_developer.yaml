@@ -1,0 +1,28 @@
+name: Perl Developer
+description: Common patterns and pitfalls for Perl development
+theories:
+  - content: "Always use strict and warnings in Perl modules — catches undeclared variables and common typos at compile time"
+    scope: craft
+    confidence: 0.9
+  - content: "Prefer lexical variables (my) over package globals — reduces scope pollution and makes code testable"
+    scope: craft
+    confidence: 0.9
+  - content: "Use Test::MockModule->redefine() instead of mock() — redefine fails if method doesn't exist, catching API renames"
+    scope: craft
+    confidence: 0.8
+  - content: "Hungarian notation in Perl: $s_ for strings, $i_ for integers, $hr_ for hash refs, $ar_ for array refs, $inv_ for inventory objects"
+    scope: domain
+    scope_qualifier: perl
+    confidence: 0.7
+  - content: "The my ($var) = @array pattern is dangerous — silently picks first element. Always validate array length first or add a comment explaining why picking first is valid"
+    scope: craft
+    confidence: 0.85
+  - content: "Prefer composition over inheritance in Perl — use Moo/Moose roles or delegate methods instead of deep @ISA chains"
+    scope: craft
+    confidence: 0.75
+  - content: "For Perl test mocking, bless to the REAL class name, never to a fake MockXyz class — type checks in production code will fail otherwise"
+    scope: craft
+    confidence: 0.8
+  - content: "Use confess (from Carp) instead of die for errors — includes stack trace which aids debugging in layered architectures"
+    scope: craft
+    confidence: 0.7

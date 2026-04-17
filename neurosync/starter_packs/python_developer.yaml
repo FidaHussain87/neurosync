@@ -1,0 +1,28 @@
+name: Python Developer
+description: Common patterns for Python development
+theories:
+  - content: "Use dataclasses or Pydantic for structured data — avoids dict-soup and gives type hints, defaults, and validation"
+    scope: craft
+    confidence: 0.85
+  - content: "Prefer pathlib.Path over os.path for file operations — more readable, chainable, and cross-platform"
+    scope: craft
+    confidence: 0.7
+  - content: "Use from __future__ import annotations for forward reference support and cleaner type hints in Python 3.9+"
+    scope: craft
+    confidence: 0.75
+  - content: "SQLite with WAL mode (PRAGMA journal_mode=WAL) allows concurrent reads during writes — essential for multi-threaded apps"
+    scope: craft
+    confidence: 0.8
+  - content: "Use pytest fixtures with tmp_path for isolated file-based tests — auto-cleanup prevents test pollution"
+    scope: craft
+    confidence: 0.8
+  - content: "ChromaDB collections need cosine distance for text similarity — set hnsw:space to cosine on creation"
+    scope: domain
+    scope_qualifier: chromadb
+    confidence: 0.7
+  - content: "Always close database connections in tests — use fixtures with yield for setup/teardown to prevent connection leaks"
+    scope: craft
+    confidence: 0.75
+  - content: "Use ruff instead of flake8+isort+black — single tool, faster, compatible configuration"
+    scope: craft
+    confidence: 0.7

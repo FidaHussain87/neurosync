@@ -1,0 +1,12 @@
+line-length = 100
+target-version = "py39"
+
+[lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "A", "C4", "SIM"]
+ignore = ["E501", "UP007", "UP045"]
+
+[lint.isort]
+known-first-party = ["neurosync"]
+
+[format]
+quote-style = "double"

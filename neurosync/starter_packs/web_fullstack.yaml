@@ -1,0 +1,22 @@
+name: Web Fullstack
+description: Common patterns for full-stack web development
+theories:
+  - content: "Validate at system boundaries (user input, external APIs) — trust internal code and framework guarantees within the system"
+    scope: craft
+    confidence: 0.85
+  - content: "Thin controllers, thick services — controllers parse input and format output, services contain business logic"
+    scope: craft
+    confidence: 0.8
+  - content: "One service method per user-visible action — keeps orchestration testable and maps cleanly to API endpoints"
+    scope: craft
+    confidence: 0.75
+  - content: "Service declarations separate the what (API contract) from the how (execution module) — change behavior without changing interface"
+    scope: domain
+    scope_qualifier: web
+    confidence: 0.7
+  - content: "Never mix SQL with business logic — all database operations belong in a dedicated DAO/repository layer"
+    scope: craft
+    confidence: 0.85
+  - content: "Use structured error codes instead of string matching — error_code enum + message template beats regex on error strings"
+    scope: craft
+    confidence: 0.7
