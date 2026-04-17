@@ -9,10 +9,41 @@ from neurosync.models import Theory
 from neurosync.vectorstore import VectorStore
 
 
+def build_recall_query(project: str, branch: str, context: str) -> str:
+    """Build a query string from project, branch, and context."""
+    parts = []
+    if project:
+        parts.append(f"project:{project}")
+    if branch:
+        parts.append(f"branch:{branch}")
+    if context:
+        parts.append(context)
+    return " ".join(parts)
+
+
+def format_theory_result(theory: Theory, score: float) -> dict[str, Any]:
+    """Format a theory object into a recall result dict."""
+    return {
+        "id": theory.id,
+        "content": theory.content,
+        "scope": theory.scope,
+        "scope_qualifier": theory.scope_qualifier,
+        "confidence": theory.confidence,
+        "score": round(score, 4),
+        "validation_status": theory.validation_status,
+        "application_count": theory.application_count,
+    }
+
+
+def estimate_tokens(text: str) -> int:
+    """Rough token estimate: ~4 chars per token."""
+    return max(1, len(text) // 4)
+
+
 class WorkingMemory:
     """Assembles context-relevant recall from theories and episodes (Layer 3)."""
 
-    def __init__(self, db: Database, vectorstore: VectorStore) -> None:
+    def __init__(self, db: Database, vectorstore: Optional[VectorStore] = None) -> None:
         self._db = db
         self._vs = vectorstore
 
@@ -29,8 +60,11 @@ class WorkingMemory:
         Returns a structured dict with primary theory, supporting theories,
         and recent episode context, all within the token budget.
         """
-        query = self._build_query(project, branch, context)
+        query = build_recall_query(project, branch, context)
         if not query.strip():
+            return {"primary": None, "supporting": [], "recent_episodes": [], "tokens_used": 0}
+
+        if not self._vs:
             return {"primary": None, "supporting": [], "recent_episodes": [], "tokens_used": 0}
 
         # Retrieve candidate theories
@@ -58,16 +92,42 @@ class WorkingMemory:
         if scored:
             # Winner: highest-scoring theory
             top_score, top_theory, top_result = scored[0]
-            primary = self._format_theory(top_theory, top_score)
-            tokens_used += self._estimate_tokens(top_theory.content)
+            primary = format_theory_result(top_theory, top_score)
+            tokens_used += estimate_tokens(top_theory.content)
 
             # Supporting: next 2-3 theories within token budget
             for score, theory, _result in scored[1:4]:
-                cost = self._estimate_tokens(theory.content)
+                cost = estimate_tokens(theory.content)
                 if tokens_used + cost > max_tokens:
                     break
-                supporting.append(self._format_theory(theory, score))
+                supporting.append(format_theory_result(theory, score))
                 tokens_used += cost
+
+        # Fetch parent theory context for primary
+        parent_theory: Optional[dict[str, Any]] = None
+        if primary and scored:
+            top_theory = scored[0][1]
+            if top_theory.parent_theory_id:
+                parent = self._db.get_theory(top_theory.parent_theory_id)
+                if parent and parent.active:
+                    parent_theory = format_theory_result(parent, 0.0)
+                    tokens_used += estimate_tokens(parent.content)
+
+        # Search for continuation episodes from same project
+        continuation: Optional[dict[str, Any]] = None
+        if project:
+            cont_results = self._vs.search_episodes(
+                "CONTINUATION", n_results=3, where={"project": project}
+            )
+            for cr in cont_results:
+                meta = cr.get("metadata", {})
+                if meta.get("event_type") == "continuation":
+                    continuation = {
+                        "id": cr["id"],
+                        "content": cr.get("document", ""),
+                    }
+                    tokens_used += estimate_tokens(cr.get("document", ""))
+                    break
 
         # Recent episodes from same project/branch
         recent_episodes: list[dict[str, Any]] = []
@@ -76,7 +136,7 @@ class WorkingMemory:
                 query, n_results=5, where={"project": project}
             )
             for ep in episode_results:
-                cost = self._estimate_tokens(ep.get("document", ""))
+                cost = estimate_tokens(ep.get("document", ""))
                 if tokens_used + cost > max_tokens:
                     break
                 recent_episodes.append({
@@ -91,35 +151,10 @@ class WorkingMemory:
             "primary": primary,
             "supporting": supporting,
             "recent_episodes": recent_episodes,
+            "continuation": continuation,
+            "parent_theory": parent_theory,
             "tokens_used": tokens_used,
         }
-
-    @staticmethod
-    def _build_query(project: str, branch: str, context: str) -> str:
-        parts = []
-        if project:
-            parts.append(f"project:{project}")
-        if branch:
-            parts.append(f"branch:{branch}")
-        if context:
-            parts.append(context)
-        return " ".join(parts)
-
-    @staticmethod
-    def _format_theory(theory: Theory, score: float) -> dict[str, Any]:
-        return {
-            "id": theory.id,
-            "content": theory.content,
-            "scope": theory.scope,
-            "scope_qualifier": theory.scope_qualifier,
-            "confidence": theory.confidence,
-            "score": round(score, 4),
-        }
-
-    @staticmethod
-    def _estimate_tokens(text: str) -> int:
-        """Rough token estimate: ~4 chars per token."""
-        return max(1, len(text) // 4)
 
     @staticmethod
     def _is_familiar(theory: Theory, familiar_topics: set[str]) -> bool:

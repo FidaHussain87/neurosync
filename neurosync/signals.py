@@ -95,6 +95,26 @@ def compute_explicit_signal() -> SignalResult:
     )
 
 
+def compute_passive_signal() -> SignalResult:
+    """PASSIVE: Automatically observed event (e.g., git changes). Weight = x0.3."""
+    return SignalResult(
+        signal_type="PASSIVE",
+        raw_value=1.0,
+        multiplier=0.3,
+    )
+
+
+def compute_intuition_signal(importance: int) -> SignalResult:
+    """INTUITION: Agent rates episode importance 1-5. Weight = max(1.0, importance * 0.4)."""
+    clamped = max(1, min(importance, 5))
+    multiplier = max(1.0, clamped * 0.4)
+    return SignalResult(
+        signal_type="INTUITION",
+        raw_value=float(clamped),
+        multiplier=multiplier,
+    )
+
+
 def compute_composite_weight(
     signals: list[SignalResult],
     max_weight: float = 1000.0,
@@ -115,6 +135,7 @@ def compute_episode_signals(
     topic_duration: float = 0.0,
     session_duration: float = 0.0,
     is_explicit: bool = False,
+    importance: int = 0,
 ) -> tuple[list[SignalResult], float]:
     """Compute all applicable signals for an episode. Returns (signals, composite_weight)."""
     signals: list[SignalResult] = []
@@ -140,6 +161,11 @@ def compute_episode_signals(
 
     if is_explicit:
         signals.append(compute_explicit_signal())
+
+    if importance > 0:
+        intuition = compute_intuition_signal(importance)
+        if intuition.multiplier > 1.0:
+            signals.append(intuition)
 
     composite = compute_composite_weight(signals) if signals else 1.0
     return signals, composite

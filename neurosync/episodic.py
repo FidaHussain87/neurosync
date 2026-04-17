@@ -6,13 +6,14 @@ from typing import Any, Optional
 
 from neurosync.db import Database
 from neurosync.models import Episode, Session, Signal, _utcnow
+from neurosync.quality import score_episode_quality
 from neurosync.vectorstore import VectorStore
 
 
 class EpisodicMemory:
     """Manages sessions and episodes (Layer 1)."""
 
-    def __init__(self, db: Database, vectorstore: VectorStore) -> None:
+    def __init__(self, db: Database, vectorstore: Optional[VectorStore] = None) -> None:
         self._db = db
         self._vs = vectorstore
 
@@ -51,8 +52,15 @@ class EpisodicMemory:
         layers_touched: Optional[list[str]] = None,
         signal_weight: float = 1.0,
         metadata: Optional[dict[str, Any]] = None,
+        cause: str = "",
+        effect: str = "",
+        reasoning: str = "",
+        importance: int = 0,
     ) -> Episode:
         """Record a new episode within a session."""
+        # Importance (1-5 intuition rating) boosts signal weight
+        if importance and importance > 0:
+            signal_weight *= 1.0 + (importance * 0.5)
         episode = Episode(
             session_id=session_id,
             event_type=event_type,
@@ -62,12 +70,43 @@ class EpisodicMemory:
             layers_touched=layers_touched or [],
             signal_weight=signal_weight,
             metadata=metadata or {},
+            cause=cause,
+            effect=effect,
+            reasoning=reasoning,
         )
+        # Compute quality score
+        episode.quality_score = score_episode_quality(content)
         self._db.save_episode(episode)
-        session = self._db.get_session(session_id)
-        project = session.project if session else ""
-        self._vs.add_episode(episode, project=project)
+        if self._vs:
+            session = self._db.get_session(session_id)
+            project = session.project if session else ""
+            self._vs.add_episode(episode, project=project)
         return episode
+
+    def record_continuation(
+        self,
+        session_id: str,
+        goal: str,
+        accomplished: str,
+        remaining: str,
+        next_step: str,
+        blockers: str = "",
+    ) -> Episode:
+        """Record a continuation episode for cross-session handoff."""
+        content = (
+            f"CONTINUATION — Goal: {goal}\n"
+            f"Accomplished: {accomplished}\n"
+            f"Remaining: {remaining}\n"
+            f"Next step: {next_step}"
+        )
+        if blockers:
+            content += f"\nBlockers: {blockers}"
+        return self.record_episode(
+            session_id=session_id,
+            event_type="continuation",
+            content=content,
+            signal_weight=8.0,
+        )
 
     def record_explicit(
         self,
@@ -144,10 +183,13 @@ class EpisodicMemory:
         """Remove old consolidated episodes from vector store, keep in SQLite."""
         if episode_ids:
             self._db.mark_episodes_decayed(episode_ids)
-            self._vs.remove_episodes(episode_ids)
+            if self._vs:
+                self._vs.remove_episodes(episode_ids)
 
     def search(
         self, query: str, n_results: int = 10, project: Optional[str] = None
     ) -> list[dict[str, Any]]:
+        if not self._vs:
+            return []
         where = {"project": project} if project else None
         return self._vs.search_episodes(query, n_results=n_results, where=where)

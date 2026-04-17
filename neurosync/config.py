@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import subprocess
 from dataclasses import dataclass
 from typing import Optional
+
+logger = logging.getLogger("neurosync.config")
 
 _DEFAULT_DATA_DIR = os.path.join(os.path.expanduser("~"), ".neurosync")
 
@@ -26,6 +29,11 @@ class NeuroSyncConfig:
     theory_confidence_decay_days: int = 30
     theory_confidence_decay_rate: float = 0.01
     max_signal_weight: float = 1000.0
+    episode_quality_threshold: int = 3
+    continuation_weight: float = 8.0
+    protocol_hints_enabled: bool = True
+    auto_consolidation_enabled: bool = True
+    auto_consolidation_threshold: int = 20
 
     def __post_init__(self) -> None:
         if not self.data_dir:
@@ -43,8 +51,11 @@ class NeuroSyncConfig:
             data_dir = os.environ.get("NEUROSYNC_DATA_DIR", _DEFAULT_DATA_DIR)
             config_path = os.path.join(data_dir, "config.json")
         if os.path.exists(config_path):
-            with open(config_path) as f:
-                overrides = json.load(f)
+            try:
+                with open(config_path) as f:
+                    overrides = json.load(f)
+            except (json.JSONDecodeError, ValueError):
+                logger.warning("Malformed config.json at %s, using defaults", config_path)
         for env_key in (
             "NEUROSYNC_DATA_DIR",
             "NEUROSYNC_DEFAULT_PROJECT",
@@ -58,8 +69,14 @@ class NeuroSyncConfig:
 
     def ensure_dirs(self) -> None:
         """Create data directories if they don't exist."""
-        os.makedirs(self.data_dir, exist_ok=True)
-        os.makedirs(self.chroma_path, exist_ok=True)
+        try:
+            os.makedirs(self.data_dir, exist_ok=True)
+            os.makedirs(self.chroma_path, exist_ok=True)
+        except OSError as e:
+            raise RuntimeError(
+                f"Cannot create NeuroSync data directory '{self.data_dir}': {e}. "
+                f"Set NEUROSYNC_DATA_DIR to a writable path."
+            ) from e
 
 
 def detect_git_info(cwd: Optional[str] = None) -> dict[str, str]:

@@ -7,9 +7,38 @@ from typing import Any, Optional
 
 from neurosync.db import Database
 from neurosync.episodic import EpisodicMemory
+from neurosync.logging import get_logger
 from neurosync.models import Episode, Theory
 from neurosync.semantic import SemanticMemory
 from neurosync.vectorstore import VectorStore
+
+logger = get_logger("consolidation")
+
+
+def maybe_consolidate(
+    db: Database,
+    vs: Optional[VectorStore],
+    episodic: EpisodicMemory,
+    semantic: SemanticMemory,
+    threshold: int = 20,
+    min_episodes: int = 5,
+) -> Optional[dict[str, Any]]:
+    """Auto-consolidate if unconsolidated episode count exceeds threshold.
+
+    Returns consolidation result dict, or None if below threshold or on error.
+    This function must never raise — it is called as a side effect of write operations.
+    """
+    try:
+        pending = db.count_episodes(consolidated=0)
+        if pending < threshold or pending < min_episodes:
+            return None
+        engine = ConsolidationEngine(
+            db, vs, episodic, semantic, min_episodes=min_episodes,
+        )
+        return engine.run()
+    except Exception:
+        logger.warning("Auto-consolidation failed", exc_info=True)
+        return None
 
 
 class ConsolidationEngine:
@@ -18,7 +47,7 @@ class ConsolidationEngine:
     def __init__(
         self,
         db: Database,
-        vectorstore: VectorStore,
+        vectorstore: Optional[VectorStore],
         episodic: EpisodicMemory,
         semantic: SemanticMemory,
         min_episodes: int = 5,
@@ -92,7 +121,7 @@ class ConsolidationEngine:
             else:
                 # Create new theory
                 scope, qualifier = self._classify_scope(cluster), self._scope_qualifier(cluster)
-                self._semantic.create_theory(
+                new_theory = self._semantic.create_theory(
                     content=candidate,
                     scope=scope,
                     scope_qualifier=qualifier,
@@ -100,6 +129,10 @@ class ConsolidationEngine:
                     source_episodes=[ep.id for ep in cluster],
                 )
                 theories_created += 1
+                # Auto-link to related theories
+                self._link_new_theory(new_theory.id)
+                # Check for parent relationship
+                self._check_parent_theory(new_theory.id, cluster)
 
             consolidated_ids.extend(ep.id for ep in cluster)
 
@@ -130,6 +163,9 @@ class ConsolidationEngine:
         """Cluster episodes by semantic similarity using single-linkage grouping."""
         if not episodes:
             return []
+        if not self._vs:
+            # Without vector search, put all episodes in one cluster
+            return [episodes]
 
         # Get embeddings from ChromaDB via search
         # Build adjacency: for each episode, find its neighbors
@@ -179,19 +215,34 @@ class ConsolidationEngine:
     def _extract_candidate(self, cluster: list[Episode]) -> Optional[str]:
         """Extract a candidate theory from a cluster of episodes.
 
-        Strategy: find common themes across episode contents.
-        Pick the most concise episode content as the theory basis.
+        Strategy: if causal episodes exist, compose a causal theory.
+        Otherwise, pick the most concise episode content as the theory basis.
         """
         if not cluster:
             return None
 
-        # Sort by signal weight (highest first) then by content length (shortest first)
+        # Separate causal vs non-causal episodes
+        causal_eps = [ep for ep in cluster if ep.cause and ep.effect]
+
+        if causal_eps:
+            # Compose causal theory from highest-weight causal episode
+            sorted_causal = sorted(
+                causal_eps,
+                key=lambda ep: (-ep.signal_weight, len(ep.content)),
+            )
+            best = sorted_causal[0]
+            reasoning = best.reasoning or ""
+            if reasoning:
+                content = f"When {best.cause}, then {best.effect} because {reasoning}"
+            else:
+                content = f"When {best.cause}, then {best.effect}"
+            return content
+
+        # Fallback: use highest-weighted, most concise episode
         sorted_eps = sorted(
             cluster,
             key=lambda ep: (-ep.signal_weight, len(ep.content)),
         )
-
-        # Use the highest-weighted, most concise episode as the theory seed
         best = sorted_eps[0]
         content = best.content.strip()
         if not content:
@@ -217,6 +268,8 @@ class ConsolidationEngine:
 
     def _find_matching_theory(self, candidate: str) -> Optional[Theory]:
         """Check if candidate matches an existing active theory (cosine < 0.5)."""
+        if not self._vs:
+            return None
         results = self._vs.search_theories(candidate, n_results=3, active_only=True)
         for result in results:
             if result.get("distance", 1.0) < 0.5:
@@ -248,6 +301,35 @@ class ConsolidationEngine:
         if len(projects) == 1:
             return projects.pop()
         return ""
+
+    def _link_new_theory(self, theory_id: str) -> None:
+        """After creating a theory, find and link related theories."""
+        related = self._semantic.find_related_theories(
+            theory_id, distance_threshold=0.4
+        )
+        if related:
+            self._semantic.link_theories(
+                theory_id, [t.id for t in related]
+            )
+
+    def _check_parent_theory(
+        self, theory_id: str, cluster: list[Episode]
+    ) -> None:
+        """If new theory's source episodes are a superset of another theory's, set parent."""
+        theory = self._db.get_theory(theory_id)
+        if not theory:
+            return
+        cluster_episode_ids = {ep.id for ep in cluster}
+        # Check existing theories for subset relationships
+        existing_theories = self._db.list_theories(active_only=True, limit=100)
+        for existing in existing_theories:
+            if existing.id == theory_id:
+                continue
+            if not existing.source_episodes:
+                continue
+            existing_set = set(existing.source_episodes)
+            if existing_set and existing_set.issubset(cluster_episode_ids):
+                self._semantic.set_parent_theory(existing.id, theory_id)
 
     def _episode_project(self, episode: Episode) -> str:
         session = self._db.get_session(episode.session_id)

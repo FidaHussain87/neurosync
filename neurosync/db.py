@@ -8,16 +8,22 @@ import threading
 from typing import Any, Optional
 
 from neurosync.config import NeuroSyncConfig
+from neurosync.logging import get_logger
 from neurosync.models import (
+    CausalLink,
     Contradiction,
     Episode,
+    FailureRecord,
     Session,
     Signal,
     Theory,
     UserKnowledge,
+    _utcnow,
 )
 
-CURRENT_SCHEMA_VERSION = 1
+logger = get_logger("db")
+
+CURRENT_SCHEMA_VERSION = 3
 
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -47,7 +53,14 @@ CREATE TABLE IF NOT EXISTS episodes (
     signal_weight REAL DEFAULT 1.0,
     consolidated INTEGER DEFAULT 0,
     consolidated_at TEXT,
-    metadata TEXT DEFAULT '{}'
+    cause TEXT DEFAULT '',
+    effect TEXT DEFAULT '',
+    reasoning TEXT DEFAULT '',
+    quality_score INTEGER,
+    metadata TEXT DEFAULT '{}',
+    reinforcement_count INTEGER DEFAULT 0,
+    last_accessed TEXT,
+    structural_fingerprint TEXT DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_episodes_session ON episodes(session_id);
 CREATE INDEX IF NOT EXISTS idx_episodes_consolidated ON episodes(consolidated);
@@ -77,10 +90,18 @@ CREATE TABLE IF NOT EXISTS theories (
     superseded_by TEXT,
     active INTEGER DEFAULT 1,
     description_length INTEGER DEFAULT 0,
-    metadata TEXT DEFAULT '{}'
+    parent_theory_id TEXT,
+    related_theories TEXT DEFAULT '[]',
+    last_applied TEXT,
+    application_count INTEGER DEFAULT 0,
+    validation_status TEXT DEFAULT 'unvalidated',
+    metadata TEXT DEFAULT '{}',
+    hierarchy_depth INTEGER DEFAULT 0,
+    structural_fingerprint TEXT DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_theories_active ON theories(active);
 CREATE INDEX IF NOT EXISTS idx_theories_scope ON theories(scope);
+CREATE INDEX IF NOT EXISTS idx_theories_parent ON theories(parent_theory_id);
 
 CREATE TABLE IF NOT EXISTS contradictions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -103,7 +124,111 @@ CREATE TABLE IF NOT EXISTS user_model (
     metadata TEXT DEFAULT '{}'
 );
 CREATE INDEX IF NOT EXISTS idx_user_model_topic ON user_model(topic);
+
+CREATE TABLE IF NOT EXISTS causal_links (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    cause_text TEXT NOT NULL,
+    effect_text TEXT NOT NULL,
+    mechanism TEXT NOT NULL DEFAULT 'direct',
+    mechanism_detail TEXT DEFAULT '',
+    confidence_level TEXT DEFAULT 'observed',
+    strength REAL DEFAULT 0.5,
+    observation_count INTEGER DEFAULT 1,
+    source_episode_ids TEXT DEFAULT '[]',
+    source_theory_id TEXT DEFAULT '',
+    project TEXT DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_causal_cause ON causal_links(cause_text);
+CREATE INDEX IF NOT EXISTS idx_causal_effect ON causal_links(effect_text);
+
+CREATE TABLE IF NOT EXISTS failure_records (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    what_failed TEXT NOT NULL,
+    why_failed TEXT NOT NULL DEFAULT '',
+    what_worked TEXT DEFAULT '',
+    category TEXT DEFAULT 'approach',
+    project TEXT DEFAULT '',
+    context TEXT DEFAULT '',
+    source_episode_id TEXT DEFAULT '',
+    severity INTEGER DEFAULT 3,
+    occurrence_count INTEGER DEFAULT 1,
+    created_at TEXT NOT NULL,
+    last_seen TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_failures_project ON failure_records(project);
+CREATE INDEX IF NOT EXISTS idx_failures_category ON failure_records(category);
 """
+
+
+# Migration v1→v2: structured as (table, column, col_definition)
+_V1_TO_V2_COLUMNS = [
+    ("episodes", "cause", "TEXT DEFAULT ''"),
+    ("episodes", "effect", "TEXT DEFAULT ''"),
+    ("episodes", "reasoning", "TEXT DEFAULT ''"),
+    ("episodes", "quality_score", "INTEGER"),
+    ("theories", "parent_theory_id", "TEXT"),
+    ("theories", "related_theories", "TEXT DEFAULT '[]'"),
+    ("theories", "last_applied", "TEXT"),
+    ("theories", "application_count", "INTEGER DEFAULT 0"),
+    ("theories", "validation_status", "TEXT DEFAULT 'unvalidated'"),
+]
+
+# Migration v2→v3: columns, tables, and indexes
+_V2_TO_V3_COLUMNS = [
+    ("theories", "hierarchy_depth", "INTEGER DEFAULT 0"),
+    ("episodes", "reinforcement_count", "INTEGER DEFAULT 0"),
+    ("episodes", "last_accessed", "TEXT"),
+    ("episodes", "structural_fingerprint", "TEXT DEFAULT ''"),
+    ("theories", "structural_fingerprint", "TEXT DEFAULT ''"),
+]
+
+_V2_TO_V3_TABLES = [
+    (
+        """CREATE TABLE IF NOT EXISTS causal_links (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            cause_text TEXT NOT NULL,
+            effect_text TEXT NOT NULL,
+            mechanism TEXT NOT NULL DEFAULT 'direct',
+            mechanism_detail TEXT DEFAULT '',
+            confidence_level TEXT DEFAULT 'observed',
+            strength REAL DEFAULT 0.5,
+            observation_count INTEGER DEFAULT 1,
+            source_episode_ids TEXT DEFAULT '[]',
+            source_theory_id TEXT DEFAULT '',
+            project TEXT DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )""",
+        "causal_links",
+    ),
+    (
+        """CREATE TABLE IF NOT EXISTS failure_records (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            what_failed TEXT NOT NULL,
+            why_failed TEXT NOT NULL DEFAULT '',
+            what_worked TEXT DEFAULT '',
+            category TEXT DEFAULT 'approach',
+            project TEXT DEFAULT '',
+            context TEXT DEFAULT '',
+            source_episode_id TEXT DEFAULT '',
+            severity INTEGER DEFAULT 3,
+            occurrence_count INTEGER DEFAULT 1,
+            created_at TEXT NOT NULL,
+            last_seen TEXT NOT NULL
+        )""",
+        "failure_records",
+    ),
+]
+
+_V2_TO_V3_INDEXES = [
+    ("CREATE INDEX IF NOT EXISTS idx_theories_parent ON theories(parent_theory_id)", "idx_theories_parent"),
+    ("CREATE INDEX IF NOT EXISTS idx_causal_cause ON causal_links(cause_text)", "idx_causal_cause"),
+    ("CREATE INDEX IF NOT EXISTS idx_causal_effect ON causal_links(effect_text)", "idx_causal_effect"),
+    ("CREATE INDEX IF NOT EXISTS idx_failures_project ON failure_records(project)", "idx_failures_project"),
+    ("CREATE INDEX IF NOT EXISTS idx_failures_category ON failure_records(category)", "idx_failures_category"),
+]
 
 
 class Database:
@@ -116,9 +241,19 @@ class Database:
         config.ensure_dirs()
         self._init_schema()
 
+    def __enter__(self) -> Database:
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        self.close()
+
     def _get_conn(self) -> sqlite3.Connection:
         if not hasattr(self._local, "conn") or self._local.conn is None:
-            conn = sqlite3.connect(self._config.sqlite_path, check_same_thread=False)
+            conn = sqlite3.connect(
+                self._config.sqlite_path,
+                check_same_thread=False,
+                timeout=10.0,
+            )
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA foreign_keys=ON")
             conn.row_factory = sqlite3.Row
@@ -128,15 +263,68 @@ class Database:
     def _init_schema(self) -> None:
         with self._lock:
             conn = self._get_conn()
-            conn.executescript(_SCHEMA_SQL)
-            cur = conn.execute("SELECT version FROM schema_version")
-            row = cur.fetchone()
-            if row is None:
+            # Check if schema_version table exists (indicates existing DB)
+            cur = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='schema_version'"
+            )
+            is_existing_db = cur.fetchone() is not None
+
+            if is_existing_db:
+                # Existing DB — only run migrations, never re-run base schema
+                cur = conn.execute("SELECT version FROM schema_version")
+                row = cur.fetchone()
+                if row is not None:
+                    current_version = row["version"]
+                    if current_version < CURRENT_SCHEMA_VERSION:
+                        self._run_migrations(conn, current_version)
+            else:
+                # Fresh DB — run full base schema (all tables/indexes)
+                conn.executescript(_SCHEMA_SQL)
                 conn.execute(
                     "INSERT INTO schema_version (version) VALUES (?)",
                     (CURRENT_SCHEMA_VERSION,),
                 )
             conn.commit()
+
+    @staticmethod
+    def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
+        """Check if column exists using PRAGMA table_info."""
+        rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+        return any(r[1] == column for r in rows)
+
+    @staticmethod
+    def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
+        row = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table,)
+        ).fetchone()
+        return row is not None
+
+    @staticmethod
+    def _index_exists(conn: sqlite3.Connection, index_name: str) -> bool:
+        row = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' AND name=?", (index_name,)
+        ).fetchone()
+        return row is not None
+
+    def _run_migrations(self, conn: sqlite3.Connection, from_version: int) -> None:
+        """Run schema migrations from from_version to CURRENT_SCHEMA_VERSION."""
+        if from_version < 2:
+            for table, column, col_def in _V1_TO_V2_COLUMNS:
+                if not self._column_exists(conn, table, column):
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_def}")
+        if from_version < 3:
+            for table, column, col_def in _V2_TO_V3_COLUMNS:
+                if not self._column_exists(conn, table, column):
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_def}")
+            for create_stmt, table_name in _V2_TO_V3_TABLES:
+                if not self._table_exists(conn, table_name):
+                    conn.execute(create_stmt)
+            for create_stmt, index_name in _V2_TO_V3_INDEXES:
+                if not self._index_exists(conn, index_name):
+                    conn.execute(create_stmt)
+        conn.execute(
+            "UPDATE schema_version SET version = ?", (CURRENT_SCHEMA_VERSION,)
+        )
 
     def close(self) -> None:
         if hasattr(self._local, "conn") and self._local.conn:
@@ -150,10 +338,14 @@ class Database:
         return json.dumps(val, default=str)
 
     @staticmethod
-    def _from_json(val: str) -> Any:
+    def _from_json(val: str, fallback: Any = None) -> Any:
         if not val:
-            return {}
-        return json.loads(val)
+            return fallback if fallback is not None else {}
+        try:
+            return json.loads(val)
+        except (json.JSONDecodeError, TypeError):
+            logger.warning("Corrupted JSON in database, using fallback: %.100s", val)
+            return fallback if fallback is not None else {}
 
     # --- Sessions ---
 
@@ -209,7 +401,7 @@ class Database:
             ended_at=row["ended_at"],
             duration_seconds=row["duration_seconds"],
             summary=row["summary"],
-            metadata=self._from_json(row["metadata"]),
+            metadata=self._from_json(row["metadata"], {}),
         )
 
     # --- Episodes ---
@@ -221,8 +413,9 @@ class Database:
                 """INSERT OR REPLACE INTO episodes
                    (id, session_id, timestamp, event_type, content, context,
                     files_touched, layers_touched, signal_weight, consolidated,
-                    consolidated_at, metadata)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    consolidated_at, cause, effect, reasoning, quality_score, metadata,
+                    reinforcement_count, last_accessed, structural_fingerprint)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     episode.id,
                     episode.session_id,
@@ -235,7 +428,14 @@ class Database:
                     episode.signal_weight,
                     episode.consolidated,
                     episode.consolidated_at,
+                    episode.cause,
+                    episode.effect,
+                    episode.reasoning,
+                    episode.quality_score,
                     self._to_json(episode.metadata),
+                    episode.reinforcement_count,
+                    episode.last_accessed,
+                    episode.structural_fingerprint,
                 ),
             )
             conn.commit()
@@ -313,12 +513,19 @@ class Database:
             event_type=row["event_type"],
             content=row["content"],
             context=row["context"],
-            files_touched=self._from_json(row["files_touched"]),
-            layers_touched=self._from_json(row["layers_touched"]),
+            files_touched=self._from_json(row["files_touched"], []),
+            layers_touched=self._from_json(row["layers_touched"], []),
             signal_weight=row["signal_weight"],
             consolidated=row["consolidated"],
             consolidated_at=row["consolidated_at"],
-            metadata=self._from_json(row["metadata"]),
+            cause=row["cause"] or "",
+            effect=row["effect"] or "",
+            reasoning=row["reasoning"] or "",
+            quality_score=row["quality_score"],
+            metadata=self._from_json(row["metadata"], {}),
+            reinforcement_count=row["reinforcement_count"] or 0,
+            last_accessed=row["last_accessed"],
+            structural_fingerprint=row["structural_fingerprint"] or "",
         )
 
     # --- Signals ---
@@ -367,8 +574,10 @@ class Database:
                 """INSERT OR REPLACE INTO theories
                    (id, content, scope, scope_qualifier, confidence, confirmation_count,
                     contradiction_count, first_observed, last_confirmed, source_episodes,
-                    superseded_by, active, description_length, metadata)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    superseded_by, active, description_length, parent_theory_id,
+                    related_theories, last_applied, application_count, validation_status,
+                    metadata, hierarchy_depth, structural_fingerprint)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     theory.id,
                     theory.content,
@@ -383,7 +592,14 @@ class Database:
                     theory.superseded_by,
                     1 if theory.active else 0,
                     theory.description_length,
+                    theory.parent_theory_id,
+                    self._to_json(theory.related_theories),
+                    theory.last_applied,
+                    theory.application_count,
+                    theory.validation_status,
                     self._to_json(theory.metadata),
+                    theory.hierarchy_depth,
+                    theory.structural_fingerprint,
                 ),
             )
             conn.commit()
@@ -441,11 +657,18 @@ class Database:
             contradiction_count=row["contradiction_count"],
             first_observed=row["first_observed"],
             last_confirmed=row["last_confirmed"],
-            source_episodes=self._from_json(row["source_episodes"]),
+            source_episodes=self._from_json(row["source_episodes"], []),
             superseded_by=row["superseded_by"],
             active=bool(row["active"]),
             description_length=row["description_length"],
-            metadata=self._from_json(row["metadata"]),
+            parent_theory_id=row["parent_theory_id"],
+            related_theories=self._from_json(row["related_theories"], []),
+            last_applied=row["last_applied"],
+            application_count=row["application_count"] or 0,
+            validation_status=row["validation_status"] or "unvalidated",
+            metadata=self._from_json(row["metadata"], {}),
+            hierarchy_depth=row["hierarchy_depth"] or 0,
+            structural_fingerprint=row["structural_fingerprint"] or "",
         )
 
     # --- Contradictions ---
@@ -569,7 +792,7 @@ class Database:
             last_seen=row["last_seen"],
             times_seen=row["times_seen"],
             times_explained=row["times_explained"],
-            metadata=self._from_json(row["metadata"]),
+            metadata=self._from_json(row["metadata"], {}),
         )
 
     def list_user_knowledge(self, project: Optional[str] = None) -> list[UserKnowledge]:
@@ -592,10 +815,288 @@ class Database:
                 last_seen=r["last_seen"],
                 times_seen=r["times_seen"],
                 times_explained=r["times_explained"],
-                metadata=self._from_json(r["metadata"]),
+                metadata=self._from_json(r["metadata"], {}),
             )
             for r in rows
         ]
+
+    # --- Episode helpers (v3) ---
+
+    def update_episode_access(
+        self, episode_id: str, reinforcement_count: int, last_accessed: str
+    ) -> None:
+        with self._lock:
+            conn = self._get_conn()
+            conn.execute(
+                "UPDATE episodes SET reinforcement_count = ?, last_accessed = ? WHERE id = ?",
+                (reinforcement_count, last_accessed, episode_id),
+            )
+            conn.commit()
+
+    def list_episodes_for_pruning(
+        self, min_age_days: int = 30, consolidated: int = 1, limit: int = 500
+    ) -> list[Episode]:
+        """List consolidated episodes older than min_age_days for pruning."""
+        conn = self._get_conn()
+        rows = conn.execute(
+            """SELECT * FROM episodes
+               WHERE consolidated = ?
+               AND julianday('now') - julianday(timestamp) > ?
+               ORDER BY timestamp ASC LIMIT ?""",
+            (consolidated, min_age_days, limit),
+        ).fetchall()
+        return [self._row_to_episode(r) for r in rows]
+
+    # --- Theory helpers (v3) ---
+
+    def list_children_of_theory(self, parent_id: str) -> list[Theory]:
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT * FROM theories WHERE parent_theory_id = ? AND active = 1",
+            (parent_id,),
+        ).fetchall()
+        return [self._row_to_theory(r) for r in rows]
+
+    # --- Causal Links ---
+
+    def save_causal_link(self, link: CausalLink) -> CausalLink:
+        with self._lock:
+            conn = self._get_conn()
+            if link.id is not None:
+                conn.execute(
+                    """UPDATE causal_links SET cause_text=?, effect_text=?, mechanism=?,
+                       mechanism_detail=?, confidence_level=?, strength=?,
+                       observation_count=?, source_episode_ids=?, source_theory_id=?,
+                       project=?, updated_at=? WHERE id=?""",
+                    (
+                        link.cause_text,
+                        link.effect_text,
+                        link.mechanism,
+                        link.mechanism_detail,
+                        link.confidence_level,
+                        link.strength,
+                        link.observation_count,
+                        self._to_json(link.source_episode_ids),
+                        link.source_theory_id,
+                        link.project,
+                        link.updated_at,
+                        link.id,
+                    ),
+                )
+            else:
+                cur = conn.execute(
+                    """INSERT INTO causal_links
+                       (cause_text, effect_text, mechanism, mechanism_detail,
+                        confidence_level, strength, observation_count,
+                        source_episode_ids, source_theory_id, project,
+                        created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        link.cause_text,
+                        link.effect_text,
+                        link.mechanism,
+                        link.mechanism_detail,
+                        link.confidence_level,
+                        link.strength,
+                        link.observation_count,
+                        self._to_json(link.source_episode_ids),
+                        link.source_theory_id,
+                        link.project,
+                        link.created_at,
+                        link.updated_at,
+                    ),
+                )
+                link.id = cur.lastrowid
+            conn.commit()
+        return link
+
+    def get_causal_link(self, link_id: int) -> Optional[CausalLink]:
+        conn = self._get_conn()
+        row = conn.execute("SELECT * FROM causal_links WHERE id = ?", (link_id,)).fetchone()
+        if not row:
+            return None
+        return self._row_to_causal_link(row)
+
+    def list_causal_links(
+        self,
+        cause_text: Optional[str] = None,
+        effect_text: Optional[str] = None,
+        project: Optional[str] = None,
+        limit: int = 100,
+    ) -> list[CausalLink]:
+        conn = self._get_conn()
+        clauses: list[str] = []
+        params: list[Any] = []
+        if cause_text is not None:
+            clauses.append("cause_text = ?")
+            params.append(cause_text)
+        if effect_text is not None:
+            clauses.append("effect_text = ?")
+            params.append(effect_text)
+        if project is not None:
+            clauses.append("project = ?")
+            params.append(project)
+        where = " AND ".join(clauses) if clauses else "1=1"
+        params.append(limit)
+        rows = conn.execute(
+            f"SELECT * FROM causal_links WHERE {where} ORDER BY observation_count DESC LIMIT ?",
+            params,
+        ).fetchall()
+        return [self._row_to_causal_link(r) for r in rows]
+
+    def find_causal_links_by_text(self, text: str, role: str = "cause") -> list[CausalLink]:
+        """Find causal links where text appears in cause or effect."""
+        conn = self._get_conn()
+        column = "cause_text" if role == "cause" else "effect_text"
+        # Escape LIKE wildcards in user-provided text
+        safe_text = text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        rows = conn.execute(
+            f"SELECT * FROM causal_links WHERE {column} LIKE ? ESCAPE '\\' ORDER BY observation_count DESC",
+            (f"%{safe_text}%",),
+        ).fetchall()
+        return [self._row_to_causal_link(r) for r in rows]
+
+    def increment_causal_observation(self, link_id: int) -> None:
+        with self._lock:
+            conn = self._get_conn()
+            conn.execute(
+                "UPDATE causal_links SET observation_count = observation_count + 1, updated_at = ? WHERE id = ?",
+                (_utcnow(), link_id),
+            )
+            conn.commit()
+
+    def count_causal_links(self) -> int:
+        conn = self._get_conn()
+        row = conn.execute("SELECT COUNT(*) FROM causal_links").fetchone()
+        return row[0] if row else 0
+
+    def _row_to_causal_link(self, row: sqlite3.Row) -> CausalLink:
+        return CausalLink(
+            id=row["id"],
+            cause_text=row["cause_text"],
+            effect_text=row["effect_text"],
+            mechanism=row["mechanism"],
+            mechanism_detail=row["mechanism_detail"] or "",
+            confidence_level=row["confidence_level"] or "observed",
+            strength=row["strength"],
+            observation_count=row["observation_count"],
+            source_episode_ids=self._from_json(row["source_episode_ids"], []),
+            source_theory_id=row["source_theory_id"] or "",
+            project=row["project"] or "",
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
+
+    # --- Failure Records ---
+
+    def save_failure_record(self, record: FailureRecord) -> FailureRecord:
+        with self._lock:
+            conn = self._get_conn()
+            if record.id is not None:
+                conn.execute(
+                    """UPDATE failure_records SET what_failed=?, why_failed=?,
+                       what_worked=?, category=?, project=?, context=?,
+                       source_episode_id=?, severity=?, occurrence_count=?,
+                       last_seen=? WHERE id=?""",
+                    (
+                        record.what_failed,
+                        record.why_failed,
+                        record.what_worked,
+                        record.category,
+                        record.project,
+                        record.context,
+                        record.source_episode_id,
+                        record.severity,
+                        record.occurrence_count,
+                        record.last_seen,
+                        record.id,
+                    ),
+                )
+            else:
+                cur = conn.execute(
+                    """INSERT INTO failure_records
+                       (what_failed, why_failed, what_worked, category, project,
+                        context, source_episode_id, severity, occurrence_count,
+                        created_at, last_seen)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        record.what_failed,
+                        record.why_failed,
+                        record.what_worked,
+                        record.category,
+                        record.project,
+                        record.context,
+                        record.source_episode_id,
+                        record.severity,
+                        record.occurrence_count,
+                        record.created_at,
+                        record.last_seen,
+                    ),
+                )
+                record.id = cur.lastrowid
+            conn.commit()
+        return record
+
+    def get_failure_record(self, record_id: int) -> Optional[FailureRecord]:
+        conn = self._get_conn()
+        row = conn.execute("SELECT * FROM failure_records WHERE id = ?", (record_id,)).fetchone()
+        if not row:
+            return None
+        return self._row_to_failure_record(row)
+
+    def list_failure_records(
+        self,
+        project: Optional[str] = None,
+        category: Optional[str] = None,
+        min_severity: int = 1,
+        limit: int = 100,
+    ) -> list[FailureRecord]:
+        conn = self._get_conn()
+        clauses = ["severity >= ?"]
+        params: list[Any] = [min_severity]
+        if project is not None:
+            clauses.append("project = ?")
+            params.append(project)
+        if category is not None:
+            clauses.append("category = ?")
+            params.append(category)
+        where = " AND ".join(clauses)
+        params.append(limit)
+        rows = conn.execute(
+            f"SELECT * FROM failure_records WHERE {where} ORDER BY occurrence_count DESC LIMIT ?",
+            params,
+        ).fetchall()
+        return [self._row_to_failure_record(r) for r in rows]
+
+    def increment_failure_occurrence(self, record_id: int) -> None:
+        with self._lock:
+            conn = self._get_conn()
+            conn.execute(
+                "UPDATE failure_records SET occurrence_count = occurrence_count + 1, last_seen = ? WHERE id = ?",
+                (_utcnow(), record_id),
+            )
+            conn.commit()
+
+    def count_failure_records(self) -> int:
+        conn = self._get_conn()
+        row = conn.execute("SELECT COUNT(*) FROM failure_records").fetchone()
+        return row[0] if row else 0
+
+    def _row_to_failure_record(self, row: sqlite3.Row) -> FailureRecord:
+        return FailureRecord(
+            id=row["id"],
+            what_failed=row["what_failed"],
+            why_failed=row["why_failed"] or "",
+            what_worked=row["what_worked"] or "",
+            category=row["category"] or "approach",
+            project=row["project"] or "",
+            context=row["context"] or "",
+            source_episode_id=row["source_episode_id"] or "",
+            severity=row["severity"],
+            occurrence_count=row["occurrence_count"],
+            created_at=row["created_at"],
+            last_seen=row["last_seen"],
+        )
 
     # --- Stats ---
 

@@ -13,7 +13,7 @@ from neurosync.vectorstore import VectorStore
 class SemanticMemory:
     """Manages theories and contradictions (Layer 2)."""
 
-    def __init__(self, db: Database, vectorstore: VectorStore) -> None:
+    def __init__(self, db: Database, vectorstore: Optional[VectorStore] = None) -> None:
         self._db = db
         self._vs = vectorstore
 
@@ -37,7 +37,8 @@ class SemanticMemory:
             metadata=metadata or {},
         )
         self._db.save_theory(theory)
-        self._vs.add_theory(theory)
+        if self._vs:
+            self._vs.add_theory(theory)
         return theory
 
     def get_theory(self, theory_id: str) -> Optional[Theory]:
@@ -68,8 +69,14 @@ class SemanticMemory:
         )
         if episode_id and episode_id not in theory.source_episodes:
             theory.source_episodes.append(episode_id)
+        # Update validation status
+        if theory.contradiction_count > 0:
+            theory.validation_status = "mixed"
+        else:
+            theory.validation_status = "confirmed"
         self._db.save_theory(theory)
-        self._vs.add_theory(theory)
+        if self._vs:
+            self._vs.add_theory(theory)
         return theory
 
     def contradict_theory(
@@ -84,14 +91,81 @@ class SemanticMemory:
             return None
         theory.contradiction_count += 1
         theory.confidence = max(0.0, theory.confidence - 0.15)
+        # Update validation status
+        if theory.confirmation_count > 0:
+            theory.validation_status = "mixed"
+        else:
+            theory.validation_status = "contradicted"
         self._db.save_theory(theory)
-        self._vs.add_theory(theory)
+        if self._vs:
+            self._vs.add_theory(theory)
         contradiction = Contradiction(
             theory_id=theory_id,
             episode_id=episode_id,
             description=description,
         )
         return self._db.save_contradiction(contradiction)
+
+    def link_theories(
+        self, theory_id: str, related_ids: list[str]
+    ) -> Optional[Theory]:
+        """Link theories bidirectionally."""
+        theory = self._db.get_theory(theory_id)
+        if not theory:
+            return None
+        for rid in related_ids:
+            if rid not in theory.related_theories:
+                theory.related_theories.append(rid)
+            # Bidirectional: add reverse link
+            related = self._db.get_theory(rid)
+            if related and theory_id not in related.related_theories:
+                related.related_theories.append(theory_id)
+                self._db.save_theory(related)
+        self._db.save_theory(theory)
+        return theory
+
+    def set_parent_theory(
+        self, child_id: str, parent_id: str
+    ) -> Optional[Theory]:
+        """Set a parent-child relationship between theories."""
+        child = self._db.get_theory(child_id)
+        if not child:
+            return None
+        child.parent_theory_id = parent_id
+        self._db.save_theory(child)
+        return child
+
+    def record_application(self, theory_id: str) -> Optional[Theory]:
+        """Track when a theory is applied during recall."""
+        theory = self._db.get_theory(theory_id)
+        if not theory:
+            return None
+        theory.last_applied = _utcnow()
+        theory.application_count += 1
+        self._db.save_theory(theory)
+        return theory
+
+    def find_related_theories(
+        self, theory_id: str, distance_threshold: float = 0.4
+    ) -> list[Theory]:
+        """Find semantically related theories via vector search."""
+        if not self._vs:
+            return []
+        theory = self._db.get_theory(theory_id)
+        if not theory:
+            return []
+        results = self._vs.search_theories(
+            theory.content, n_results=10, active_only=True
+        )
+        related: list[Theory] = []
+        for result in results:
+            if result["id"] == theory_id:
+                continue
+            if result.get("distance", 1.0) < distance_threshold:
+                t = self._db.get_theory(result["id"])
+                if t and t.active:
+                    related.append(t)
+        return related
 
     def supersede_theory(self, old_id: str, new_id: str) -> None:
         """Mark a theory as superseded by another."""
@@ -100,7 +174,8 @@ class SemanticMemory:
             old.active = False
             old.superseded_by = new_id
             self._db.save_theory(old)
-            self._vs.remove_theory(old_id)
+            if self._vs:
+                self._vs.remove_theory(old_id)
 
     def retire_theory(self, theory_id: str) -> Optional[Theory]:
         """Manually deactivate a theory."""
@@ -109,7 +184,8 @@ class SemanticMemory:
             return None
         theory.active = False
         self._db.save_theory(theory)
-        self._vs.remove_theory(theory_id)
+        if self._vs:
+            self._vs.remove_theory(theory_id)
         return theory
 
     def apply_confidence_decay(self, decay_days: int = 30, decay_rate: float = 0.01) -> int:
@@ -129,9 +205,11 @@ class SemanticMemory:
                 theory.confidence = max(0.0, theory.confidence - overdue * decay_rate)
                 if theory.confidence <= 0.05:
                     theory.active = False
-                    self._vs.remove_theory(theory.id)
+                    if self._vs:
+                        self._vs.remove_theory(theory.id)
                 else:
-                    self._vs.add_theory(theory)
+                    if self._vs:
+                        self._vs.add_theory(theory)
                 self._db.save_theory(theory)
                 affected += 1
         return affected
@@ -152,4 +230,6 @@ class SemanticMemory:
     def search(
         self, query: str, n_results: int = 10, active_only: bool = True
     ) -> list[dict[str, Any]]:
+        if not self._vs:
+            return []
         return self._vs.search_theories(query, n_results=n_results, active_only=active_only)

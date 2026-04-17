@@ -29,11 +29,41 @@ EPISODE_TYPES = frozenset({
     "architecture",
     "debugging",
     "explicit",
+    "causal",
+    "continuation",
+    "observed",
 })
+
+# --- Theory validation statuses ---
+
+VALIDATION_STATUSES = frozenset({"unvalidated", "confirmed", "contradicted", "mixed"})
 
 # --- Theory scopes ---
 
 THEORY_SCOPES = frozenset({"project", "domain", "craft"})
+
+# --- Causal mechanism types ---
+
+MECHANISM_TYPES = frozenset({
+    "direct",
+    "enabling",
+    "preventing",
+    "modulating",
+    "triggering",
+    "correlating",
+})
+
+# --- Failure categories ---
+
+FAILURE_CATEGORIES = frozenset({
+    "approach",
+    "assumption",
+    "configuration",
+    "api_misuse",
+    "pattern",
+    "tooling",
+    "performance",
+})
 
 
 @dataclass
@@ -65,7 +95,15 @@ class Episode:
     signal_weight: float = 1.0
     consolidated: int = 0  # 0=pending, 1=consolidated, 2=decayed
     consolidated_at: Optional[str] = None
+    cause: str = ""
+    effect: str = ""
+    reasoning: str = ""
+    quality_score: Optional[int] = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    # v3 fields
+    reinforcement_count: int = 0
+    last_accessed: Optional[str] = None
+    structural_fingerprint: str = ""
 
 
 @dataclass
@@ -97,7 +135,15 @@ class Theory:
     superseded_by: Optional[str] = None
     active: bool = True
     description_length: int = 0
+    parent_theory_id: Optional[str] = None
+    related_theories: list[str] = field(default_factory=list)
+    last_applied: Optional[str] = None
+    application_count: int = 0
+    validation_status: str = "unvalidated"
     metadata: dict[str, Any] = field(default_factory=dict)
+    # v3 fields
+    hierarchy_depth: int = 0
+    structural_fingerprint: str = ""
 
     def __post_init__(self) -> None:
         if not self.description_length and self.content:
@@ -129,3 +175,40 @@ class UserKnowledge:
     times_seen: int = 0
     times_explained: int = 0
     metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class CausalLink:
+    """A causal relationship extracted from episodes or theories."""
+
+    id: Optional[int] = None
+    cause_text: str = ""
+    effect_text: str = ""
+    mechanism: str = "direct"
+    mechanism_detail: str = ""
+    confidence_level: str = "observed"
+    strength: float = 0.5
+    observation_count: int = 1
+    source_episode_ids: list[str] = field(default_factory=list)
+    source_theory_id: str = ""
+    project: str = ""
+    created_at: str = field(default_factory=_utcnow)
+    updated_at: str = field(default_factory=_utcnow)
+
+
+@dataclass
+class FailureRecord:
+    """A recorded failure or anti-pattern from corrections and debugging."""
+
+    id: Optional[int] = None
+    what_failed: str = ""
+    why_failed: str = ""
+    what_worked: str = ""
+    category: str = "approach"
+    project: str = ""
+    context: str = ""
+    source_episode_id: str = ""
+    severity: int = 3
+    occurrence_count: int = 1
+    created_at: str = field(default_factory=_utcnow)
+    last_seen: str = field(default_factory=_utcnow)
