@@ -372,6 +372,73 @@ A: Yes — anything that supports MCP (Model Context Protocol). Add the server c
 
 ---
 
+## Publishing to PyPI
+
+If you want to publish a new version to PyPI (so `pip install neurosync` works for everyone):
+
+### One-time setup
+
+1. Create an account at [pypi.org](https://pypi.org/account/register/)
+2. Go to Account Settings → API tokens → "Add API token"
+3. Set scope to "Entire account" (for first upload) or "Project: neurosync" (after first upload)
+4. Save the token somewhere safe — you'll only see it once
+
+### Install the publishing tools
+
+```bash
+pip install build twine
+```
+
+### Publish a release
+
+```bash
+# 1. Update the version number
+#    Edit neurosync/version.py → change __version__ = "0.2.0" (or whatever)
+
+# 2. Build the package (creates dist/ folder with .tar.gz and .whl files)
+python -m build
+
+# 3. Check the package looks correct before uploading
+twine check dist/*
+
+# 4. Upload to PyPI (will ask for credentials)
+twine upload dist/*
+#    Username: __token__
+#    Password: pypi-AgEIcH... (paste your API token)
+```
+
+After uploading, anyone in the world can install it with:
+
+```bash
+pip install neurosync
+```
+
+### Test on TestPyPI first (optional, recommended for first time)
+
+If you want to test the process without publishing to the real PyPI:
+
+```bash
+# Upload to the test server
+twine upload --repository testpypi dist/*
+
+# Install from the test server to verify it works
+pip install --index-url https://test.pypi.org/simple/ neurosync
+```
+
+### Publishing checklist
+
+- [ ] Version bumped in `neurosync/version.py`
+- [ ] All tests pass: `pytest --cov=neurosync -v`
+- [ ] Lint clean: `ruff check neurosync/`
+- [ ] Clean build folder: `rm -rf dist/ build/ *.egg-info`
+- [ ] Build: `python -m build`
+- [ ] Check: `twine check dist/*`
+- [ ] Upload: `twine upload dist/*`
+- [ ] Verify: `pip install neurosync` in a fresh virtualenv
+- [ ] Tag the release: `git tag v0.1.0 && git push --tags`
+
+---
+
 ## License
 
 MIT — do whatever you want with it.
