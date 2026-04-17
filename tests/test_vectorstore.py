@@ -10,6 +10,7 @@ class TestVectorStore:
         stats = vectorstore.stats()
         assert stats["episodes"] == 0
         assert stats["theories"] == 0
+        assert stats["failures"] == 0
 
     def test_add_and_search_episode(self, vectorstore):
         ep = Episode(
@@ -68,3 +69,28 @@ class TestVectorStore:
         vectorstore.reset()
         assert vectorstore.stats()["episodes"] == 0
         assert vectorstore.stats()["theories"] == 0
+
+    def test_episode_causal_metadata(self, vectorstore):
+        ep = Episode(
+            id="ep-causal", session_id="s1",
+            content="Applied theory because context matched",
+            cause="context matched", quality_score=5,
+        )
+        vectorstore.add_episode(ep, project="test")
+        results = vectorstore.search_episodes("theory context", n_results=1)
+        assert len(results) >= 1
+        meta = results[0]["metadata"]
+        assert meta.get("has_causal") == 1
+        assert meta.get("quality_score") == 5
+
+    def test_theory_validation_metadata(self, vectorstore):
+        theory = Theory(
+            id="th-val", content="Validated theory content",
+            validation_status="confirmed", application_count=3,
+        )
+        vectorstore.add_theory(theory)
+        results = vectorstore.search_theories("validated theory", n_results=1)
+        assert len(results) >= 1
+        meta = results[0]["metadata"]
+        assert meta.get("validation_status") == "confirmed"
+        assert meta.get("application_count") == 3

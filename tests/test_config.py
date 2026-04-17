@@ -17,6 +17,17 @@ class TestNeuroSyncConfig:
         assert config.recall_max_tokens == 500
         assert config.consolidation_min_episodes == 5
 
+    def test_new_config_defaults(self, tmp_dir):
+        config = NeuroSyncConfig(data_dir=tmp_dir)
+        assert config.episode_quality_threshold == 3
+        assert config.continuation_weight == 8.0
+        assert config.protocol_hints_enabled is True
+
+    def test_auto_consolidation_config_defaults(self, tmp_dir):
+        config = NeuroSyncConfig(data_dir=tmp_dir)
+        assert config.auto_consolidation_enabled is True
+        assert config.auto_consolidation_threshold == 20
+
     def test_ensure_dirs(self, tmp_dir):
         config = NeuroSyncConfig(data_dir=os.path.join(tmp_dir, "sub"))
         config.ensure_dirs()
@@ -37,6 +48,32 @@ class TestNeuroSyncConfig:
             json.dump({"unknown_key": "value", "data_dir": tmp_dir}, f)
         config = NeuroSyncConfig.load(config_path=config_path)
         assert config.data_dir == tmp_dir
+
+
+    def test_malformed_config_json_uses_defaults(self, tmp_dir):
+        """A malformed config.json should not crash — defaults should be used."""
+        config_path = os.path.join(tmp_dir, "config.json")
+        with open(config_path, "w") as f:
+            f.write("{invalid json content")
+        config = NeuroSyncConfig.load(config_path=config_path)
+        # Should have default values, not crash
+        assert config.recall_max_tokens == 500
+
+    def test_ensure_dirs_permission_error(self, tmp_dir):
+        """ensure_dirs should raise RuntimeError with helpful message on OSError."""
+        import stat
+        # Create a read-only directory
+        readonly = os.path.join(tmp_dir, "readonly")
+        os.makedirs(readonly)
+        os.chmod(readonly, stat.S_IRUSR | stat.S_IXUSR)
+        config = NeuroSyncConfig(data_dir=os.path.join(readonly, "sub", "data"))
+        try:
+            import pytest
+            with pytest.raises(RuntimeError, match="Cannot create NeuroSync data directory"):
+                config.ensure_dirs()
+        finally:
+            # Restore permissions for cleanup
+            os.chmod(readonly, stat.S_IRWXU)
 
 
 class TestGitDetection:

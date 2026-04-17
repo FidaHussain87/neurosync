@@ -52,13 +52,50 @@ class TestWorkingMemory:
             assert "list comprehensions" not in result["primary"]["content"].lower()
 
     def test_build_query(self):
-        from neurosync.working import WorkingMemory
-        q = WorkingMemory._build_query("proj", "main", "fix bug")
+        from neurosync.working import build_recall_query
+        q = build_recall_query("proj", "main", "fix bug")
         assert "project:proj" in q
         assert "branch:main" in q
         assert "fix bug" in q
 
     def test_estimate_tokens(self):
-        from neurosync.working import WorkingMemory
-        assert WorkingMemory._estimate_tokens("hello world") >= 1
-        assert WorkingMemory._estimate_tokens("") == 1
+        from neurosync.working import estimate_tokens
+        assert estimate_tokens("hello world") >= 1
+        assert estimate_tokens("") == 1
+
+    def test_recall_continuation(self, working, episodic):
+        session = episodic.start_session(project="myproj")
+        episodic.record_continuation(
+            session.id,
+            goal="Implement feature X",
+            accomplished="Phase 1 done",
+            remaining="Phase 2",
+            next_step="Start Phase 2",
+        )
+        result = working.recall(project="myproj", context="feature X")
+        # Continuation should be in the result
+        assert "continuation" in result
+
+    def test_recall_parent_theory(self, working, semantic):
+        parent = semantic.create_theory(
+            content="General database theory for all projects",
+            scope="craft", confidence=0.9,
+        )
+        child = semantic.create_theory(
+            content="SQLite WAL mode for concurrent access",
+            scope="project", confidence=0.8,
+        )
+        semantic.set_parent_theory(child.id, parent.id)
+        result = working.recall(context="SQLite WAL mode")
+        # Parent theory context should be available
+        assert "parent_theory" in result
+
+    def test_format_validation_status(self, working, semantic):
+        theory = semantic.create_theory(
+            content="Validated insight about testing",
+            scope="craft", confidence=0.9,
+        )
+        semantic.confirm_theory(theory.id)
+        result = working.recall(context="testing")
+        if result["primary"]:
+            assert "validation_status" in result["primary"]

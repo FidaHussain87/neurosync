@@ -9,6 +9,8 @@ from neurosync.signals import (
     compute_duration_signal,
     compute_episode_signals,
     compute_explicit_signal,
+    compute_intuition_signal,
+    compute_passive_signal,
     compute_repetition_signal,
     compute_surprise_signal,
 )
@@ -97,3 +99,31 @@ class TestSignals:
             layers_touched=[],
         )
         assert weight == 1.0
+
+    def test_passive_signal(self):
+        s = compute_passive_signal()
+        assert s.signal_type == "PASSIVE"
+        assert s.multiplier == 0.3
+        assert s.raw_value == 1.0
+
+    def test_intuition_signal(self):
+        s = compute_intuition_signal(3)
+        assert s.signal_type == "INTUITION"
+        assert abs(s.multiplier - 1.2) < 1e-9  # 3 * 0.4
+
+    def test_intuition_clamped(self):
+        s_low = compute_intuition_signal(0)
+        assert s_low.raw_value == 1.0  # clamped to 1
+        s_high = compute_intuition_signal(10)
+        assert s_high.raw_value == 5.0  # clamped to 5
+        assert s_high.multiplier == 2.0  # 5 * 0.4
+
+    def test_compute_signals_with_importance(self):
+        signals, weight = compute_episode_signals(
+            event_type="decision",
+            layers_touched=[],
+            importance=4,
+        )
+        types = {s.signal_type for s in signals}
+        assert "INTUITION" in types
+        assert weight > 1.0

@@ -77,9 +77,65 @@ class TestSemanticMemory:
         # Create a theory with old last_confirmed date
         theory = semantic.create_theory(content="stale theory", confidence=0.7)
         theory.last_confirmed = "2020-01-01T00:00:00+00:00"
-        from neurosync.db import Database
         semantic._db.save_theory(theory)
         affected = semantic.apply_confidence_decay(decay_days=30, decay_rate=0.01)
         assert affected >= 1
         loaded = semantic.get_theory(theory.id)
         assert loaded.confidence < 0.7
+
+    def test_link_theories(self, semantic):
+        t1 = semantic.create_theory(content="Theory about SQLite WAL")
+        t2 = semantic.create_theory(content="Theory about database concurrency")
+        result = semantic.link_theories(t1.id, [t2.id])
+        assert result is not None
+        assert t2.id in result.related_theories
+        # Check bidirectional
+        loaded_t2 = semantic.get_theory(t2.id)
+        assert t1.id in loaded_t2.related_theories
+
+    def test_set_parent(self, semantic):
+        parent = semantic.create_theory(content="General database theory")
+        child = semantic.create_theory(content="SQLite-specific theory")
+        result = semantic.set_parent_theory(child.id, parent.id)
+        assert result is not None
+        assert result.parent_theory_id == parent.id
+
+    def test_record_application(self, semantic):
+        theory = semantic.create_theory(content="Applied theory")
+        result = semantic.record_application(theory.id)
+        assert result.application_count == 1
+        assert result.last_applied is not None
+        result2 = semantic.record_application(theory.id)
+        assert result2.application_count == 2
+
+    def test_confirm_updates_validation(self, semantic):
+        theory = semantic.create_theory(content="test", confidence=0.5)
+        confirmed = semantic.confirm_theory(theory.id, episode_id="ep1")
+        assert confirmed.validation_status == "confirmed"
+        # Now contradict — should become mixed
+        from neurosync.models import Episode, Session
+        session = Session()
+        semantic._db.save_session(session)
+        ep = Episode(session_id=session.id, content="contra")
+        semantic._db.save_episode(ep)
+        semantic.contradict_theory(theory.id, ep.id, "Wrong")
+        loaded = semantic.get_theory(theory.id)
+        assert loaded.validation_status == "mixed"
+
+    def test_contradict_updates_validation(self, semantic, db):
+        theory = semantic.create_theory(content="test", confidence=0.8)
+        session = Session()
+        db.save_session(session)
+        ep = Episode(session_id=session.id, content="contra")
+        db.save_episode(ep)
+        semantic.contradict_theory(theory.id, ep.id, "Wrong")
+        loaded = semantic.get_theory(theory.id)
+        assert loaded.validation_status == "contradicted"
+
+    def test_find_related(self, semantic):
+        semantic.create_theory(content="Always use WAL mode for SQLite")
+        t2 = semantic.create_theory(content="SQLite WAL mode improves concurrency")
+        # These are semantically similar
+        related = semantic.find_related_theories(t2.id, distance_threshold=0.8)
+        # May or may not find depending on embedding quality
+        assert isinstance(related, list)

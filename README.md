@@ -33,7 +33,7 @@ NeuroSync doesn't just *store* things — it **learns**.
 
 | | Mempalace / existing tools | NeuroSync |
 |---|---|---|
-| **Tool count** | 29 tools | 8 tools |
+| **Tool count** | 29 tools | 9 tools |
 | **Per-prompt cost** | ~$0.25 overhead (hooks on every turn) | Zero — no hooks, no per-turn injection |
 | **Storage strategy** | Stores everything raw (code, HTML, conversations) | Stores structured *events*, extracts *patterns* |
 | **Learning** | None — just a filing cabinet | Clusters episodes, extracts theories, tracks confidence |
@@ -42,6 +42,13 @@ NeuroSync doesn't just *store* things — it **learns**.
 | **User awareness** | None | Tracks what you already know, doesn't re-explain it |
 
 The core idea: **your AI assistant should get better at working with *you* over time, without you having to manually teach it.**
+
+### What's automatic
+
+- **Auto-consolidation** — theories are extracted automatically when enough episodes accumulate. No manual `consolidate` or cron jobs needed.
+- **Passive git observation** — file changes and commits are recorded as low-weight "observed" episodes at session boundaries. The developer doesn't need to describe what they changed — NeuroSync sees it.
+- **Dynamic protocol hints** — tool responses include contextual guidance based on session state (correction count, pending episodes).
+- **Minimal protocol** — 3 rules instead of 125 lines. Run `neurosync generate-protocol` to get the CLAUDE.md snippet.
 
 ---
 
@@ -85,9 +92,9 @@ You work with AI  ──>  NeuroSync records what happened (episodes)
 
 ---
 
-## The 8 Tools
+## The 9 Tools
 
-NeuroSync connects to your AI assistant using MCP (a standard protocol). It provides exactly 8 tools — no more, no less:
+NeuroSync connects to your AI assistant using MCP (a standard protocol). It provides exactly 9 tools — no more, no less:
 
 | Tool | What it does | When it's used |
 |---|---|---|
@@ -96,6 +103,7 @@ NeuroSync connects to your AI assistant using MCP (a standard protocol). It prov
 | `neurosync_remember` | "This is important — don't forget it" | When you say "remember this" |
 | `neurosync_query` | "Search my memories for X" | When you need to look something up |
 | `neurosync_correct` | "You got this wrong, here's the right answer" | When the AI makes a mistake |
+| `neurosync_handoff` | "I'm handing off this task to the next session" | When a task spans multiple sessions |
 | `neurosync_status` | "How's my memory doing?" | Health check |
 | `neurosync_theories` | "Show me what I've learned" | Browse/manage learned patterns |
 | `neurosync_consolidate` | "Review recent events and extract lessons" | Periodically (like studying) |
@@ -196,38 +204,57 @@ Zeros are normal — you haven't used it yet!
 
 ### Make Claude use NeuroSync automatically
 
-NeuroSync is connected, but Claude won't use it unless you tell it to. Add the following to your project's `CLAUDE.md` file (or create one in your project root):
+NeuroSync is connected, but Claude won't use it proactively unless you tell it how. Add the minimal protocol to your project's `CLAUDE.md`:
+
+```bash
+# Option A: Generate and append
+neurosync generate-protocol >> CLAUDE.md
+
+# Option B: Generate a full CLAUDE.md for your project
+neurosync generate-protocol --project "My App" > CLAUDE.md
+```
+
+Or copy-paste the minimal protocol manually:
 
 ```markdown
 ## NeuroSync Memory Protocol
 
-If `neurosync_*` tools are available, follow this protocol:
+NeuroSync gives you persistent memory across sessions via 9 MCP tools. Most behavior is automatic (auto-consolidation, passive git observation). Follow these 3 rules:
 
-### On session start
-- Call `neurosync_recall` with the current project name and context to load relevant memories.
-- Review returned theories and recent episodes before starting work.
+### Rule 1: Follow recalled theories as ground truth
 
-### During the session
-- When the user says "remember this", "don't forget", or similar → call `neurosync_remember` immediately.
-- When the user corrects you ("that's wrong", "no, the right way is...") → call `neurosync_correct` with what was wrong and what's right.
-- When you discover something surprising or non-obvious → call `neurosync_remember` with the discovery.
+Call `neurosync_recall` at session start. Apply recalled theories like a style guide — they are confirmed lessons from past sessions, not suggestions. Check for continuation episodes from previous sessions.
 
-### On session end (when asked, or before a long task completes)
-- Call `neurosync_record` with structured episodes covering what happened:
-  - Decisions made (and why)
-  - Bugs found or fixed
-  - Corrections received
-  - Patterns noticed
-  - Architecture discussions
-  - Files and layers touched
-- Include a brief session summary.
-- Add any important takeaways to `explicit_remember`.
+### Rule 2: Record corrections immediately
 
-### When searching for past context
-- Call `neurosync_query` to search across past episodes and theories.
+When corrected, call `neurosync_correct` with what was wrong and what's right. Corrections compound exponentially (2^N) — they are the most valuable signal.
+
+### Rule 3: Record decisions at session end
+
+Call `neurosync_record` with structured episodes when the session ends. Write causal statements (why, not what). Use `neurosync_handoff` for multi-session tasks.
+
+### Available tools
+
+| Tool | Purpose |
+|------|---------|
+| `neurosync_recall` | Load project memory at session start |
+| `neurosync_record` | Record session episodes at end |
+| `neurosync_remember` | Explicitly remember something (10x weight) |
+| `neurosync_query` | Search memories mid-session |
+| `neurosync_correct` | Record a mistake (2^N weight) |
+| `neurosync_handoff` | Cross-session task continuity |
+| `neurosync_status` | Health check |
+| `neurosync_theories` | Browse/manage learned patterns |
+| `neurosync_consolidate` | Manual consolidation trigger |
+
+### What's automatic
+
+- **Auto-consolidation** — theories are extracted automatically when enough episodes accumulate (no manual `consolidate` needed)
+- **Passive git observation** — file changes and commits are recorded as low-weight episodes automatically
+- **Dynamic hints** — tool responses include contextual guidance
 ```
 
-Copy-paste this block into every project where you want Claude to build up memory. Without these instructions, the tools are available but Claude won't know when to call them.
+Copy-paste this into every project's `CLAUDE.md` where you want Claude to build up memory.
 
 ---
 
@@ -254,7 +281,7 @@ Here's what happens over time:
 You work normally. NeuroSync records episodes — decisions you made, bugs you found, corrections you gave the AI. These pile up in episodic memory.
 
 ### Week 2: Consolidation
-You run `neurosync consolidate` (or set up a nightly cron job). NeuroSync looks at all the episodes, groups similar ones together, and extracts "theories" — short statements about patterns it noticed.
+NeuroSync auto-consolidates when enough episodes accumulate (20+ by default). You can also run `neurosync consolidate` manually. NeuroSync looks at all the episodes, groups similar ones together, and extracts "theories" — short statements about patterns it noticed.
 
 For example, after seeing 5 episodes where you corrected the AI about your testing setup, it might create:
 
@@ -272,18 +299,12 @@ Theories aren't static. They gain confidence when confirmed and lose it when con
 
 Think of consolidation like studying after class. The AI reviews its notes (episodes) and creates study cards (theories).
 
-### Run it manually
+**In v3, consolidation is automatic.** When enough unconsolidated episodes accumulate (20+ by default), NeuroSync runs consolidation during the next write operation (`record`, `remember`, or `correct`). No cron jobs, no manual intervention.
+
+### Run it manually (optional)
 
 ```bash
 neurosync consolidate
-```
-
-### Run it automatically every night at 2 AM
-
-Add this to your crontab (`crontab -e`):
-
-```bash
-0 2 * * * python -m neurosync consolidate >> ~/.neurosync/consolidation.log 2>&1
 ```
 
 ### Preview what it would do (without actually doing it)
@@ -319,7 +340,9 @@ Create `~/.neurosync/config.json` for fine-tuning:
   "consolidation_similarity_threshold": 0.8,
   "theory_confidence_decay_days": 30,
   "theory_confidence_decay_rate": 0.01,
-  "max_signal_weight": 1000.0
+  "max_signal_weight": 1000.0,
+  "auto_consolidation_enabled": true,
+  "auto_consolidation_threshold": 20
 }
 ```
 
@@ -331,6 +354,8 @@ Create `~/.neurosync/config.json` for fine-tuning:
 | `theory_confidence_decay_days` | Days without confirmation before confidence starts dropping | 30 |
 | `theory_confidence_decay_rate` | How fast confidence drops per day after the grace period | 0.01 |
 | `max_signal_weight` | Cap on how important a single episode can be | 1000 |
+| `auto_consolidation_enabled` | Enable auto-consolidation on write operations | true |
+| `auto_consolidation_threshold` | Number of pending episodes before auto-consolidation triggers | 20 |
 
 ---
 
@@ -343,18 +368,22 @@ neurosync/
 │   ├── cli.py                  # Command-line interface
 │   ├── config.py               # Settings management
 │   ├── models.py               # Data structures (Session, Episode, Theory, etc.)
-│   ├── db.py                   # SQLite database operations
+│   ├── db.py                   # SQLite database operations (with schema migrations)
 │   ├── vectorstore.py          # ChromaDB for semantic search
 │   ├── episodic.py             # Layer 1: session & episode management
-│   ├── semantic.py             # Layer 2: theory management & confidence
+│   ├── semantic.py             # Layer 2: theory management, confidence & linking
 │   ├── working.py              # Layer 3: recall & winner-take-all
-│   ├── consolidation.py        # The "studying" engine
-│   ├── signals.py              # Signal weight calculations
+│   ├── consolidation.py        # Consolidation engine (causal extraction + auto-trigger)
+│   ├── signals.py              # Signal weight calculations (8 types)
+│   ├── quality.py              # Episode quality scoring
+│   ├── hooks.py                # Claude Code auto-recall hook generation
+│   ├── git_observer.py         # Passive git state observation
+│   ├── protocol.py             # Minimal protocol text & CLAUDE.md generator
 │   ├── user_model.py           # Tracks what you already know
 │   ├── retrieval.py            # Full recall pipeline
 │   ├── starter_pack_loader.py  # Loads YAML starter packs
 │   └── starter_packs/          # Built-in theory packs (YAML files)
-├── tests/                      # Test suite (121 tests, 88%+ coverage)
+├── tests/                      # Test suite (~277 tests, 89%+ coverage)
 ├── docs/                       # Detailed documentation
 ├── pyproject.toml              # Package config
 └── Dockerfile                  # Container support
@@ -371,7 +400,7 @@ neurosync/
 | Semantic search | ChromaDB | Local vector DB, cosine similarity |
 | Transport | MCP JSON-RPC 2.0 over stdio | Standard protocol for AI tool integration |
 | Build | hatchling | Modern Python packaging |
-| Testing | pytest + pytest-cov | 121 tests, 88%+ coverage |
+| Testing | pytest + pytest-cov | ~277 tests, 89%+ coverage |
 | Linting | ruff | Fast, comprehensive |
 
 ---
@@ -385,6 +414,10 @@ neurosync consolidate                    # Run the learning engine
 neurosync consolidate --dry-run          # Preview without changing anything
 neurosync consolidate --project myproj   # Only consolidate one project
 neurosync import-starter-pack <name>     # Load a starter theory pack
+neurosync generate-protocol              # Output minimal protocol for CLAUDE.md
+neurosync generate-protocol --project X  # Generate full CLAUDE.md for project X
+neurosync install-hook                   # Install auto-recall hook for Claude Code
+neurosync install-hook --dry-run         # Preview hook installation
 neurosync reset --confirm                # Delete ALL memory data (careful!)
 ```
 
@@ -469,7 +502,7 @@ pip install build twine
 
 ```bash
 # 1. Update the version number
-#    Edit neurosync/version.py → change __version__ = "0.2.0" (or whatever)
+#    Edit neurosync/version.py → change __version__ = "0.4.0" (or whatever)
 
 # 2. Build the package (creates dist/ folder with .tar.gz and .whl files)
 python -m build
@@ -511,7 +544,7 @@ pip install --index-url https://test.pypi.org/simple/ neurosync
 - [ ] Check: `twine check dist/*`
 - [ ] Upload: `twine upload dist/*`
 - [ ] Verify: `pip install neurosync` in a fresh virtualenv
-- [ ] Tag the release: `git tag v0.1.0 && git push --tags`
+- [ ] Tag the release: `git tag v0.4.0 && git push --tags`
 
 ---
 

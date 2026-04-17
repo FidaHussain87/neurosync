@@ -72,3 +72,53 @@ class TestRetrievalPipeline:
             )
         result = pipeline.recall(context="theory", max_tokens=100)
         assert result["tokens_used"] <= 120  # Small buffer
+
+    def test_continuation_in_recall(self, db, vectorstore, semantic):
+        from neurosync.episodic import EpisodicMemory
+        um = UserModel(db)
+        episodic = EpisodicMemory(db, vectorstore)
+        pipeline = RetrievalPipeline(db, vectorstore, um, semantic=semantic)
+        session = episodic.start_session(project="myproj")
+        episodic.record_continuation(
+            session.id,
+            goal="Feature X",
+            accomplished="Phase 1",
+            remaining="Phase 2",
+            next_step="Start Phase 2",
+        )
+        result = pipeline.recall(project="myproj", context="feature X")
+        assert "continuation" in result
+
+    def test_format_with_continuation(self, db, vectorstore, semantic):
+        from neurosync.episodic import EpisodicMemory
+        um = UserModel(db)
+        episodic = EpisodicMemory(db, vectorstore)
+        pipeline = RetrievalPipeline(db, vectorstore, um, semantic=semantic)
+        session = episodic.start_session(project="myproj")
+        episodic.record_continuation(
+            session.id,
+            goal="Feature X",
+            accomplished="Phase 1",
+            remaining="Phase 2",
+            next_step="Start Phase 2",
+        )
+        semantic.create_theory(
+            content="Important theory about feature X",
+            scope="project", scope_qualifier="myproj", confidence=0.9,
+        )
+        result = pipeline.recall(project="myproj", context="feature X")
+        formatted = pipeline.format_for_context(result)
+        assert "Primary Insight" in formatted
+        assert "status:" in formatted
+
+    def test_application_tracking(self, db, vectorstore, semantic):
+        um = UserModel(db)
+        pipeline = RetrievalPipeline(db, vectorstore, um, semantic=semantic)
+        theory = semantic.create_theory(
+            content="Track application of this theory",
+            scope="craft", confidence=0.9,
+        )
+        assert theory.application_count == 0
+        pipeline.recall(context="track application theory")
+        loaded = semantic.get_theory(theory.id)
+        assert loaded.application_count == 1

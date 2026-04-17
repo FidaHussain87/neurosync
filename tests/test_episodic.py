@@ -81,3 +81,41 @@ class TestEpisodicMemory:
         episodic.record_episode(session.id, "decision", "Implemented OAuth2 authentication flow")
         results = episodic.search("authentication", project="myproj")
         assert len(results) >= 1
+
+    def test_record_causal_fields(self, episodic):
+        session = episodic.start_session()
+        ep = episodic.record_episode(
+            session.id, "causal", "Theory applied successfully",
+            cause="user asked about DNS",
+            effect="recalled DNS theory",
+            reasoning="because theory confidence was high",
+        )
+        loaded = episodic.get_episode(ep.id)
+        assert loaded.cause == "user asked about DNS"
+        assert loaded.effect == "recalled DNS theory"
+        assert loaded.reasoning == "because theory confidence was high"
+        assert loaded.event_type == "causal"
+
+    def test_record_continuation(self, episodic):
+        session = episodic.start_session()
+        ep = episodic.record_continuation(
+            session.id,
+            goal="Implement Azure CMK scanner",
+            accomplished="ExtComm methods done",
+            remaining="Service module and declaration",
+            next_step="Create AZURECMKSCANNER.pm",
+            blockers="Need API response format",
+        )
+        assert ep.event_type == "continuation"
+        assert ep.signal_weight == 8.0
+        assert "CONTINUATION" in ep.content
+        assert "Blockers:" in ep.content
+
+    def test_quality_score_computed(self, episodic):
+        session = episodic.start_session()
+        ep = episodic.record_episode(
+            session.id, "decision",
+            "Chose ISMR::Storage::Azure because the DNS zone is storage-specific",
+        )
+        assert ep.quality_score is not None
+        assert ep.quality_score >= 0
