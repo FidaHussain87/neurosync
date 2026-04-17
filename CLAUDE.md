@@ -4,6 +4,33 @@
 
 NeuroSync is a developer-focused memory MCP server. It provides episodic, semantic, and working memory for AI coding agents via 8 MCP tools.
 
+## NeuroSync Memory Protocol
+
+If `neurosync_*` tools are available, follow this protocol:
+
+### On session start
+- Call `neurosync_recall` with the current project name and context to load relevant memories.
+- Review returned theories and recent episodes before starting work.
+
+### During the session
+- When the user says "remember this", "don't forget", or similar → call `neurosync_remember` immediately.
+- When the user corrects you ("that's wrong", "no, the right way is...") → call `neurosync_correct` with what was wrong and what's right.
+- When you discover something surprising or non-obvious → call `neurosync_remember` with the discovery.
+
+### On session end (when asked, or before a long task completes)
+- Call `neurosync_record` with structured episodes covering what happened:
+  - Decisions made (and why)
+  - Bugs found or fixed
+  - Corrections received
+  - Patterns noticed
+  - Architecture discussions
+  - Files and layers touched
+- Include a brief session summary.
+- Add any important takeaways to `explicit_remember`.
+
+### When searching for past context
+- Call `neurosync_query` to search across past episodes and theories.
+
 ## Project Structure
 
 - `neurosync/` — Main Python package

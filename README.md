@@ -104,36 +104,77 @@ NeuroSync connects to your AI assistant using MCP (a standard protocol). It prov
 
 ## Getting Started
 
-### Install it
+### Option A: Install from PyPI (when published)
 
 ```bash
 pip install neurosync
 ```
 
-### Connect it to Claude Code
+Then connect to Claude Code:
 
 ```bash
-claude mcp add neurosync -- python -m neurosync.mcp_server
+claude mcp add -s user neurosync -- python -m neurosync.mcp_server
 ```
 
-That's it. Now when you use Claude Code, it has access to NeuroSync's memory tools.
+### Option B: Install from GitHub (works right now)
+
+```bash
+# 1. Clone the repo
+git clone https://github.com/FidaHussain87/neurosync.git
+cd neurosync
+
+# 2. Create a virtual environment (required — dependencies won't install globally)
+python3 -m venv .venv
+source .venv/bin/activate    # On Windows: .venv\Scripts\activate
+
+# 3. Install neurosync and its dependencies into the venv
+pip install -e .
+```
+
+Now connect it to Claude Code. **Important:** use the full path to the venv's Python, not just `python`, so Claude Code can find the installed package:
+
+```bash
+# Replace /path/to/neurosync with wherever you cloned the repo
+claude mcp add -s user neurosync -- /path/to/neurosync/.venv/bin/python -m neurosync.mcp_server
+```
+
+For example:
+```bash
+claude mcp add -s user neurosync -- /Users/yourname/neurosync/.venv/bin/python -m neurosync.mcp_server
+```
+
+> **Why `-s user`?** Without it, the MCP server is only available in the current project folder. With `-s user`, it's available in every project you open with Claude Code.
+
+> **Why the full path to Python?** Claude Code runs the MCP server as a separate process. It doesn't know about your virtual environment, so you need to point it directly to the Python binary inside `.venv/` that has neurosync installed.
 
 ### Connect it to other AI tools (Cline, OpenCode, etc.)
 
-Add this to your MCP configuration:
+Add this to your MCP configuration (use the full venv Python path):
 
 ```json
 {
   "mcpServers": {
     "neurosync": {
-      "command": "python",
+      "command": "/path/to/neurosync/.venv/bin/python",
       "args": ["-m", "neurosync.mcp_server"]
     }
   }
 }
 ```
 
-### Check that it's working
+### Verify it's connected
+
+```bash
+# Check the MCP server is registered and healthy
+claude mcp list
+```
+
+You should see:
+```
+neurosync: /path/to/neurosync/.venv/bin/python -m neurosync.mcp_server - ✓ Connected
+```
+
+### Check memory status
 
 ```bash
 neurosync status
@@ -152,6 +193,41 @@ You should see something like:
 ```
 
 Zeros are normal — you haven't used it yet!
+
+### Make Claude use NeuroSync automatically
+
+NeuroSync is connected, but Claude won't use it unless you tell it to. Add the following to your project's `CLAUDE.md` file (or create one in your project root):
+
+```markdown
+## NeuroSync Memory Protocol
+
+If `neurosync_*` tools are available, follow this protocol:
+
+### On session start
+- Call `neurosync_recall` with the current project name and context to load relevant memories.
+- Review returned theories and recent episodes before starting work.
+
+### During the session
+- When the user says "remember this", "don't forget", or similar → call `neurosync_remember` immediately.
+- When the user corrects you ("that's wrong", "no, the right way is...") → call `neurosync_correct` with what was wrong and what's right.
+- When you discover something surprising or non-obvious → call `neurosync_remember` with the discovery.
+
+### On session end (when asked, or before a long task completes)
+- Call `neurosync_record` with structured episodes covering what happened:
+  - Decisions made (and why)
+  - Bugs found or fixed
+  - Corrections received
+  - Patterns noticed
+  - Architecture discussions
+  - Files and layers touched
+- Include a brief session summary.
+- Add any important takeaways to `explicit_remember`.
+
+### When searching for past context
+- Call `neurosync_query` to search across past episodes and theories.
+```
+
+Copy-paste this block into every project where you want Claude to build up memory. Without these instructions, the tools are available but Claude won't know when to call them.
 
 ---
 
