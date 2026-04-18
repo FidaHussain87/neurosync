@@ -314,6 +314,50 @@ Call `neurosync_record` with structured episodes when the session ends. Write ca
 
 ---
 
+## Optional: Add the `/neurosync` Slash Command
+
+The MCP server gives Claude the tools. The slash command gives **you** a shortcut to run NeuroSync commands directly from the chat:
+
+```
+/neurosync status                           # Memory health check
+/neurosync consolidate                      # Extract theories from episodes
+/neurosync recall                           # Load memory for this session
+/neurosync remember always use pytest here  # Store a fact
+/neurosync query how do we handle auth      # Search memories
+/neurosync theories                         # Browse learned patterns
+/neurosync reset                            # Clear all data (careful!)
+```
+
+### Quick setup (2 commands)
+
+```bash
+# 1. Create the skill directory
+mkdir -p ~/.claude/skills/neurosync
+
+# 2. Copy the skill file from the repo
+cp /path/to/neurosync/skills/neurosync/SKILL.md ~/.claude/skills/neurosync/SKILL.md
+```
+
+Replace `/path/to/neurosync` with wherever you cloned the repo. For example:
+
+```bash
+cp ~/neurosync/skills/neurosync/SKILL.md ~/.claude/skills/neurosync/SKILL.md
+```
+
+Or download it directly without cloning:
+
+```bash
+mkdir -p ~/.claude/skills/neurosync
+curl -o ~/.claude/skills/neurosync/SKILL.md \
+  https://raw.githubusercontent.com/FidaHussain87/neurosync/main/skills/neurosync/SKILL.md
+```
+
+Start a new Claude Code session and type `/neurosync` — it should autocomplete.
+
+> **This is optional.** The MCP tools work without the skill. The skill just gives you a convenient `/neurosync` shortcut instead of waiting for Claude to call the tools or switching to a terminal. See [`docs/skill-setup.md`](docs/skill-setup.md) for the full setup guide with troubleshooting.
+
+---
+
 ## Starter Packs
 
 Don't want to start from zero? Import pre-built knowledge for your tech stack:
