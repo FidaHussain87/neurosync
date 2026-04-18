@@ -206,12 +206,28 @@ Zeros are normal — you haven't used it yet!
 
 NeuroSync is connected, but Claude won't use it proactively unless you tell it how. You need to add the protocol to a file Claude Code reads. There are three options — pick the one that fits your situation:
 
+#### Minimal vs Full protocol
+
+NeuroSync ships with two protocol versions:
+
+| Version | Rules | Best for |
+|---------|-------|----------|
+| **Minimal** (3 rules) | recall, correct, record | Quick start, `generate-protocol` output |
+| **Full** (7 rules) | + query-before-guess, proactive remember, handoff, consult theories | Power users who want maximum memory quality |
+
+The full protocol is in [`docs/protocol-full.md`](docs/protocol-full.md) — it teaches Claude about signal weighting, episode quality scoring, causal language, and all 9 tools. Copy it directly into your `~/.claude/CLAUDE.md` for the best experience.
+
 #### Option A: User-level (recommended — all projects, no git noise)
 
 Place the protocol in your **user-level** `CLAUDE.md`. This lives outside any git repo, applies to every project on your machine, and never shows up in `git diff`:
 
 ```bash
+# Minimal (3 rules):
 neurosync generate-protocol >> ~/.claude/CLAUDE.md
+
+# Full (7 rules, recommended):
+# Copy the content from docs/protocol-full.md (everything below the --- line)
+# into ~/.claude/CLAUDE.md
 ```
 
 This is the best option when:
