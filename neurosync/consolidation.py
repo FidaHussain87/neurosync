@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import Any, Optional
 
+from neurosync.analogy import AnalogyEngine
 from neurosync.db import Database
 from neurosync.episodic import EpisodicMemory
 from neurosync.logging import get_logger
@@ -58,6 +59,7 @@ class ConsolidationEngine:
         self._vs = vectorstore
         self._episodic = episodic
         self._semantic = semantic
+        self._analogy = AnalogyEngine(db)
         self._min_episodes = min_episodes
         self._similarity_threshold = similarity_threshold
         self._mdl_threshold = mdl_threshold
@@ -129,6 +131,12 @@ class ConsolidationEngine:
                     source_episodes=[ep.id for ep in cluster],
                 )
                 theories_created += 1
+                # Auto-compute structural fingerprint
+                fp = self._analogy.fingerprint(candidate)
+                if fp.patterns:
+                    new_theory.structural_fingerprint = fp.to_string()
+                    self._db.save_theory(new_theory)
+                    self._db.set_entity_fingerprints(new_theory.id, "theory", list(fp.patterns))
                 # Auto-link to related theories
                 self._link_new_theory(new_theory.id)
                 # Check for parent relationship

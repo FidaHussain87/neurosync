@@ -119,3 +119,16 @@ class TestEpisodicMemory:
         )
         assert ep.quality_score is not None
         assert ep.quality_score >= 0
+
+    def test_record_episode_auto_fingerprint(self, episodic, db):
+        """Auto-computed fingerprint and junction table write on record_episode."""
+        session = episodic.start_session()
+        ep = episodic.record_episode(
+            session.id, "decision",
+            "The cache invalidation failed because the TTL was too long, causing stale cache entries",
+        )
+        assert ep.structural_fingerprint != ""
+        assert "caching" in ep.structural_fingerprint
+        # Verify junction table was written
+        fps = db.get_entity_fingerprints(ep.id, "episode")
+        assert "caching" in fps

@@ -84,11 +84,20 @@ class CausalGraph:
         return [self.save_link(link)]
 
     def save_link(self, link: CausalLink) -> CausalLink:
-        """Save a causal link, deduplicating by cause+effect text match."""
-        # Check for existing link with same cause and effect
+        """Save a causal link, deduplicating by cause+effect text match.
+
+        Uses exact match first (fast path), then normalized fallback for
+        case-insensitive/whitespace-tolerant dedup.
+        """
+        # Fast path: exact match
         existing = self._db.list_causal_links(
             cause_text=link.cause_text, effect_text=link.effect_text,
         )
+        # Fallback: normalized match (case-insensitive, whitespace-tolerant)
+        if not existing:
+            existing = self._db.list_causal_links_normalized(
+                link.cause_text, link.effect_text,
+            )
         if existing:
             dup = existing[0]
             self._db.increment_causal_observation(dup.id)
@@ -99,8 +108,17 @@ class CausalGraph:
                 loaded.source_episode_ids = list(new_eps)
                 loaded.updated_at = _utcnow()
                 self._db.save_causal_link(loaded)
+                # Dual-write: junction table
+                for ep_id in link.source_episode_ids:
+                    if ep_id:
+                        self._db.add_causal_link_episode(loaded.id, ep_id)
                 return loaded
-        return self._db.save_causal_link(link)
+        saved = self._db.save_causal_link(link)
+        # Dual-write: junction table
+        for ep_id in link.source_episode_ids:
+            if ep_id:
+                self._db.add_causal_link_episode(saved.id, ep_id)
+        return saved
 
     def strengthen_link(self, link_id: int, episode_id: str) -> None:
         """Increment observation count and add source episode."""
@@ -110,10 +128,15 @@ class CausalGraph:
             link.source_episode_ids.append(episode_id)
             link.updated_at = _utcnow()
             self._db.save_causal_link(link)
+        # Dual-write: junction table
+        if episode_id:
+            self._db.add_causal_link_episode(link_id, episode_id)
 
     # --- Forward/backward queries ---
 
-    def get_effects_of(self, cause_text: str, max_depth: int = 1) -> list[CausalLink]:
+    def get_effects_of(
+        self, cause_text: str, max_depth: int = 1, project: Optional[str] = None,
+    ) -> list[CausalLink]:
         """Get direct (and optionally transitive) effects of a cause."""
         results: list[CausalLink] = []
         visited: set[str] = set()
@@ -126,13 +149,15 @@ class CausalGraph:
             if current_cause in visited:
                 continue
             visited.add(current_cause)
-            links = self._db.list_causal_links(cause_text=current_cause)
+            links = self._db.list_causal_links(cause_text=current_cause, project=project)
             for link in links:
                 results.append(link)
                 queue.append((link.effect_text, depth + 1))
         return results
 
-    def get_causes_of(self, effect_text: str, max_depth: int = 1) -> list[CausalLink]:
+    def get_causes_of(
+        self, effect_text: str, max_depth: int = 1, project: Optional[str] = None,
+    ) -> list[CausalLink]:
         """Get direct (and optionally transitive) causes of an effect."""
         results: list[CausalLink] = []
         visited: set[str] = set()
@@ -145,14 +170,14 @@ class CausalGraph:
             if current_effect in visited:
                 continue
             visited.add(current_effect)
-            links = self._db.list_causal_links(effect_text=current_effect)
+            links = self._db.list_causal_links(effect_text=current_effect, project=project)
             for link in links:
                 results.append(link)
                 queue.append((link.cause_text, depth + 1))
         return results
 
     def get_causal_chain(
-        self, start: str, end: str, max_depth: int = 5
+        self, start: str, end: str, max_depth: int = 5, project: Optional[str] = None,
     ) -> Optional[list[CausalLink]]:
         """Find a causal chain from start to end using BFS."""
         queue: deque[tuple[str, list[CausalLink]]] = deque([(start, [])])
@@ -165,7 +190,7 @@ class CausalGraph:
             if current in visited:
                 continue
             visited.add(current)
-            links = self._db.list_causal_links(cause_text=current)
+            links = self._db.list_causal_links(cause_text=current, project=project)
             for link in links:
                 new_path = path + [link]
                 if link.effect_text == end:
@@ -173,10 +198,12 @@ class CausalGraph:
                 queue.append((link.effect_text, new_path))
         return None
 
-    def get_causal_neighborhood(self, text: str, radius: int = 2) -> dict[str, Any]:
+    def get_causal_neighborhood(
+        self, text: str, radius: int = 2, project: Optional[str] = None,
+    ) -> dict[str, Any]:
         """Get upstream causes + downstream effects + links around a concept."""
-        upstream = self.get_causes_of(text, max_depth=radius)
-        downstream = self.get_effects_of(text, max_depth=radius)
+        upstream = self.get_causes_of(text, max_depth=radius, project=project)
+        downstream = self.get_effects_of(text, max_depth=radius, project=project)
         return {
             "concept": text,
             "upstream": [self._link_summary(link) for link in upstream],

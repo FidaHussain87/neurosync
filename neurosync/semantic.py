@@ -39,6 +39,9 @@ class SemanticMemory:
         self._db.save_theory(theory)
         if self._vs:
             self._vs.add_theory(theory)
+        # Dual-write: junction table
+        for ep_id in theory.source_episodes:
+            self._db.add_theory_episode(theory.id, ep_id)
         return theory
 
     def get_theory(self, theory_id: str) -> Optional[Theory]:
@@ -69,6 +72,9 @@ class SemanticMemory:
         )
         if episode_id and episode_id not in theory.source_episodes:
             theory.source_episodes.append(episode_id)
+        # Dual-write: junction table
+        if episode_id:
+            self._db.add_theory_episode(theory_id, episode_id)
         # Update validation status
         if theory.contradiction_count > 0:
             theory.validation_status = "mixed"
@@ -121,6 +127,9 @@ class SemanticMemory:
             if related and theory_id not in related.related_theories:
                 related.related_theories.append(theory_id)
                 self._db.save_theory(related)
+            # Dual-write: junction table (bidirectional)
+            self._db.add_theory_relation(theory_id, rid)
+            self._db.add_theory_relation(rid, theory_id)
         self._db.save_theory(theory)
         return theory
 

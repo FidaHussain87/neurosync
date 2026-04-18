@@ -134,6 +134,9 @@ class TheoryHierarchy:
         self._db.save_theory(parent)
         if self._vs:
             self._vs.add_theory(parent)
+        # Dual-write: junction table
+        for ep_id in parent.source_episodes:
+            self._db.add_theory_episode(parent.id, ep_id)
         # Set children's parent
         for cid in child_ids:
             child = self._db.get_theory(cid)
@@ -170,6 +173,9 @@ class TheoryHierarchy:
         self._db.save_theory(survivor)
         if self._vs:
             self._vs.add_theory(survivor)
+        # Dual-write: junction table
+        for ep_id in survivor.source_episodes:
+            self._db.add_theory_episode(survivor.id, ep_id)
         return survivor
 
     def detect_merge_candidates(

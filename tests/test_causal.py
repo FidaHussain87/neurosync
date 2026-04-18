@@ -156,3 +156,38 @@ class TestCausalGraph:
         db.save_episode(ep2)
         result = graph.build_from_episodes()
         assert result["links_created"] == 1
+
+    def test_save_link_dedup_case_insensitive(self, db, vectorstore):
+        """Normalized dedup should catch case differences like 'ChromaDB' vs 'chromadb'."""
+        _, graph = self._setup(db, vectorstore)
+        link1 = CausalLink(cause_text="ChromaDB Error", effect_text="Search Failure")
+        saved1 = graph.save_link(link1)
+        # Same link with different casing
+        link2 = CausalLink(cause_text="chromadb error", effect_text="search failure")
+        saved2 = graph.save_link(link2)
+        # Should have deduplicated — same link ID
+        assert saved2.id == saved1.id
+        loaded = db.get_causal_link(saved1.id)
+        assert loaded.observation_count == 2
+
+    def test_save_link_dedup_whitespace(self, db, vectorstore):
+        """Normalized dedup should catch whitespace differences."""
+        _, graph = self._setup(db, vectorstore)
+        link1 = CausalLink(cause_text="missing  index", effect_text="slow  query")
+        saved1 = graph.save_link(link1)
+        link2 = CausalLink(cause_text="missing index", effect_text="slow query")
+        saved2 = graph.save_link(link2)
+        assert saved2.id == saved1.id
+        loaded = db.get_causal_link(saved1.id)
+        assert loaded.observation_count == 2
+
+    def test_get_effects_with_project_filter(self, db, vectorstore):
+        """Project filtering should only return links for the specified project."""
+        _, graph = self._setup(db, vectorstore)
+        db.save_causal_link(CausalLink(cause_text="A", effect_text="B", project="proj1"))
+        db.save_causal_link(CausalLink(cause_text="A", effect_text="C", project="proj2"))
+        effects_proj1 = graph.get_effects_of("A", max_depth=1, project="proj1")
+        assert len(effects_proj1) == 1
+        assert effects_proj1[0].effect_text == "B"
+        effects_all = graph.get_effects_of("A", max_depth=1)
+        assert len(effects_all) == 2

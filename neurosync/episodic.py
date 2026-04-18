@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
+from neurosync.analogy import AnalogyEngine
 from neurosync.db import Database
 from neurosync.models import Episode, Session, Signal, _utcnow
 from neurosync.quality import score_episode_quality
@@ -16,6 +17,7 @@ class EpisodicMemory:
     def __init__(self, db: Database, vectorstore: Optional[VectorStore] = None) -> None:
         self._db = db
         self._vs = vectorstore
+        self._analogy = AnalogyEngine(db)
 
     # --- Sessions ---
 
@@ -76,7 +78,14 @@ class EpisodicMemory:
         )
         # Compute quality score
         episode.quality_score = score_episode_quality(content)
+        # Auto-compute structural fingerprint
+        fp = self._analogy.fingerprint(content)
+        if fp.patterns:
+            episode.structural_fingerprint = fp.to_string()
         self._db.save_episode(episode)
+        # Write fingerprints to junction table
+        if episode.structural_fingerprint:
+            self._db.set_entity_fingerprints(episode.id, "episode", list(fp.patterns))
         if self._vs:
             session = self._db.get_session(session_id)
             project = session.project if session else ""

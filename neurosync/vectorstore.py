@@ -82,6 +82,8 @@ class VectorStore:
             metadata["has_causal"] = 1
         if episode.quality_score is not None:
             metadata["quality_score"] = episode.quality_score
+        if episode.structural_fingerprint:
+            metadata["structural_fingerprint"] = episode.structural_fingerprint
         self._episodes.upsert(
             ids=[episode.id],
             documents=[self._safe_document(episode.content)],
@@ -125,17 +127,20 @@ class VectorStore:
         """Embed and store a theory."""
         if not theory.content.strip():
             return
+        metadata: dict[str, Any] = {
+            "scope": theory.scope,
+            "scope_qualifier": theory.scope_qualifier,
+            "confidence": theory.confidence,
+            "active": 1 if theory.active else 0,
+            "validation_status": theory.validation_status,
+            "application_count": theory.application_count,
+        }
+        if theory.structural_fingerprint:
+            metadata["structural_fingerprint"] = theory.structural_fingerprint
         self._theories.upsert(
             ids=[theory.id],
             documents=[self._safe_document(theory.content)],
-            metadatas=[{
-                "scope": theory.scope,
-                "scope_qualifier": theory.scope_qualifier,
-                "confidence": theory.confidence,
-                "active": 1 if theory.active else 0,
-                "validation_status": theory.validation_status,
-                "application_count": theory.application_count,
-            }],
+            metadatas=[metadata],
         )
 
     def remove_theory(self, theory_id: str) -> None:

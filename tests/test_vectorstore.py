@@ -94,3 +94,28 @@ class TestVectorStore:
         meta = results[0]["metadata"]
         assert meta.get("validation_status") == "confirmed"
         assert meta.get("application_count") == 3
+
+    def test_add_episode_with_fingerprint(self, vectorstore):
+        """Fingerprint should be stored in ChromaDB episode metadata."""
+        ep = Episode(
+            id="ep-fp", session_id="s1",
+            content="Cache invalidation caused stale data",
+            structural_fingerprint="caching,data_consistency",
+        )
+        vectorstore.add_episode(ep, project="test")
+        results = vectorstore.search_episodes("cache invalidation", n_results=1)
+        assert len(results) >= 1
+        meta = results[0]["metadata"]
+        assert meta.get("structural_fingerprint") == "caching,data_consistency"
+
+    def test_add_theory_with_fingerprint(self, vectorstore):
+        """Fingerprint should be stored in ChromaDB theory metadata."""
+        theory = Theory(
+            id="th-fp", content="Retry logic with exponential backoff",
+            structural_fingerprint="retry_logic",
+        )
+        vectorstore.add_theory(theory)
+        results = vectorstore.search_theories("retry backoff", n_results=1)
+        assert len(results) >= 1
+        meta = results[0]["metadata"]
+        assert meta.get("structural_fingerprint") == "retry_logic"

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import threading
 from typing import Any, Optional
@@ -23,7 +24,7 @@ from neurosync.models import (
 
 logger = get_logger("db")
 
-CURRENT_SCHEMA_VERSION = 3
+CURRENT_SCHEMA_VERSION = 5
 
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -138,7 +139,9 @@ CREATE TABLE IF NOT EXISTS causal_links (
     source_theory_id TEXT DEFAULT '',
     project TEXT DEFAULT '',
     created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    cause_text_normalized TEXT DEFAULT '',
+    effect_text_normalized TEXT DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_causal_cause ON causal_links(cause_text);
 CREATE INDEX IF NOT EXISTS idx_causal_effect ON causal_links(effect_text);
@@ -159,6 +162,39 @@ CREATE TABLE IF NOT EXISTS failure_records (
 );
 CREATE INDEX IF NOT EXISTS idx_failures_project ON failure_records(project);
 CREATE INDEX IF NOT EXISTS idx_failures_category ON failure_records(category);
+
+-- v4: Junction tables for queryable relationships
+CREATE TABLE IF NOT EXISTS theory_episodes (
+    theory_id TEXT NOT NULL, episode_id TEXT NOT NULL,
+    PRIMARY KEY (theory_id, episode_id)
+);
+CREATE INDEX IF NOT EXISTS idx_te_episode ON theory_episodes(episode_id);
+
+CREATE TABLE IF NOT EXISTS theory_relations (
+    theory_id TEXT NOT NULL, related_theory_id TEXT NOT NULL,
+    PRIMARY KEY (theory_id, related_theory_id)
+);
+CREATE INDEX IF NOT EXISTS idx_tr_related ON theory_relations(related_theory_id);
+
+CREATE TABLE IF NOT EXISTS causal_link_episodes (
+    causal_link_id INTEGER NOT NULL, episode_id TEXT NOT NULL,
+    PRIMARY KEY (causal_link_id, episode_id)
+);
+CREATE INDEX IF NOT EXISTS idx_cle_episode ON causal_link_episodes(episode_id);
+
+CREATE TABLE IF NOT EXISTS entity_fingerprints (
+    entity_id TEXT NOT NULL, entity_type TEXT NOT NULL, pattern TEXT NOT NULL,
+    PRIMARY KEY (entity_id, entity_type, pattern)
+);
+CREATE INDEX IF NOT EXISTS idx_efp_pattern ON entity_fingerprints(pattern);
+CREATE INDEX IF NOT EXISTS idx_efp_entity ON entity_fingerprints(entity_id, entity_type);
+
+-- v4: Missing indexes for causal_links
+CREATE INDEX IF NOT EXISTS idx_causal_project ON causal_links(project);
+CREATE INDEX IF NOT EXISTS idx_causal_cause_effect ON causal_links(cause_text, effect_text);
+
+-- v5: Composite index on normalized causal text for indexed dedup lookup
+CREATE INDEX IF NOT EXISTS idx_causal_normalized ON causal_links(cause_text_normalized, effect_text_normalized);
 """
 
 
@@ -228,6 +264,61 @@ _V2_TO_V3_INDEXES = [
     ("CREATE INDEX IF NOT EXISTS idx_causal_effect ON causal_links(effect_text)", "idx_causal_effect"),
     ("CREATE INDEX IF NOT EXISTS idx_failures_project ON failure_records(project)", "idx_failures_project"),
     ("CREATE INDEX IF NOT EXISTS idx_failures_category ON failure_records(category)", "idx_failures_category"),
+]
+
+# Migration v3→v4: junction tables and indexes
+_V3_TO_V4_TABLES = [
+    (
+        """CREATE TABLE IF NOT EXISTS theory_episodes (
+            theory_id TEXT NOT NULL, episode_id TEXT NOT NULL,
+            PRIMARY KEY (theory_id, episode_id)
+        )""",
+        "theory_episodes",
+    ),
+    (
+        """CREATE TABLE IF NOT EXISTS theory_relations (
+            theory_id TEXT NOT NULL, related_theory_id TEXT NOT NULL,
+            PRIMARY KEY (theory_id, related_theory_id)
+        )""",
+        "theory_relations",
+    ),
+    (
+        """CREATE TABLE IF NOT EXISTS causal_link_episodes (
+            causal_link_id INTEGER NOT NULL, episode_id TEXT NOT NULL,
+            PRIMARY KEY (causal_link_id, episode_id)
+        )""",
+        "causal_link_episodes",
+    ),
+    (
+        """CREATE TABLE IF NOT EXISTS entity_fingerprints (
+            entity_id TEXT NOT NULL, entity_type TEXT NOT NULL, pattern TEXT NOT NULL,
+            PRIMARY KEY (entity_id, entity_type, pattern)
+        )""",
+        "entity_fingerprints",
+    ),
+]
+
+_V3_TO_V4_INDEXES = [
+    ("CREATE INDEX IF NOT EXISTS idx_te_episode ON theory_episodes(episode_id)", "idx_te_episode"),
+    ("CREATE INDEX IF NOT EXISTS idx_tr_related ON theory_relations(related_theory_id)", "idx_tr_related"),
+    ("CREATE INDEX IF NOT EXISTS idx_cle_episode ON causal_link_episodes(episode_id)", "idx_cle_episode"),
+    ("CREATE INDEX IF NOT EXISTS idx_efp_pattern ON entity_fingerprints(pattern)", "idx_efp_pattern"),
+    ("CREATE INDEX IF NOT EXISTS idx_efp_entity ON entity_fingerprints(entity_id, entity_type)", "idx_efp_entity"),
+    ("CREATE INDEX IF NOT EXISTS idx_causal_project ON causal_links(project)", "idx_causal_project"),
+    ("CREATE INDEX IF NOT EXISTS idx_causal_cause_effect ON causal_links(cause_text, effect_text)", "idx_causal_cause_effect"),
+]
+
+# Migration v4→v5: normalized columns on causal_links for indexed dedup
+_V4_TO_V5_COLUMNS = [
+    ("causal_links", "cause_text_normalized", "TEXT DEFAULT ''"),
+    ("causal_links", "effect_text_normalized", "TEXT DEFAULT ''"),
+]
+
+_V4_TO_V5_INDEXES = [
+    (
+        "CREATE INDEX IF NOT EXISTS idx_causal_normalized ON causal_links(cause_text_normalized, effect_text_normalized)",
+        "idx_causal_normalized",
+    ),
 ]
 
 
@@ -322,9 +413,98 @@ class Database:
             for create_stmt, index_name in _V2_TO_V3_INDEXES:
                 if not self._index_exists(conn, index_name):
                     conn.execute(create_stmt)
+        if from_version < 4:
+            for create_stmt, table_name in _V3_TO_V4_TABLES:
+                if not self._table_exists(conn, table_name):
+                    conn.execute(create_stmt)
+            for create_stmt, index_name in _V3_TO_V4_INDEXES:
+                if not self._index_exists(conn, index_name):
+                    conn.execute(create_stmt)
+            self._backfill_v4_junction_tables(conn)
+        if from_version < 5:
+            for table, column, col_def in _V4_TO_V5_COLUMNS:
+                if not self._column_exists(conn, table, column):
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_def}")
+            for create_stmt, index_name in _V4_TO_V5_INDEXES:
+                if not self._index_exists(conn, index_name):
+                    conn.execute(create_stmt)
+            self._backfill_v5_normalized_columns(conn)
         conn.execute(
             "UPDATE schema_version SET version = ?", (CURRENT_SCHEMA_VERSION,)
         )
+
+    def _backfill_v4_junction_tables(self, conn: sqlite3.Connection) -> None:
+        """Populate v4 junction tables from existing JSON columns."""
+        # theory_episodes from theories.source_episodes
+        rows = conn.execute("SELECT id, source_episodes FROM theories").fetchall()
+        for row in rows:
+            theory_id = row["id"]
+            episode_ids = self._from_json(row["source_episodes"], [])
+            for ep_id in episode_ids:
+                if ep_id:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO theory_episodes (theory_id, episode_id) VALUES (?, ?)",
+                        (theory_id, ep_id),
+                    )
+        # theory_relations from theories.related_theories
+        rows2 = conn.execute("SELECT id, related_theories FROM theories").fetchall()
+        for row in rows2:
+            theory_id = row["id"]
+            related_ids = self._from_json(row["related_theories"], [])
+            for rid in related_ids:
+                if rid:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO theory_relations (theory_id, related_theory_id) VALUES (?, ?)",
+                        (theory_id, rid),
+                    )
+        # causal_link_episodes from causal_links.source_episode_ids
+        if self._table_exists(conn, "causal_links"):
+            cl_rows = conn.execute("SELECT id, source_episode_ids FROM causal_links").fetchall()
+            for row in cl_rows:
+                link_id = row["id"]
+                ep_ids = self._from_json(row["source_episode_ids"], [])
+                for ep_id in ep_ids:
+                    if ep_id:
+                        conn.execute(
+                            "INSERT OR IGNORE INTO causal_link_episodes (causal_link_id, episode_id) VALUES (?, ?)",
+                            (link_id, ep_id),
+                        )
+        # entity_fingerprints from episodes.structural_fingerprint and theories.structural_fingerprint
+        ep_rows = conn.execute("SELECT id, structural_fingerprint FROM episodes WHERE structural_fingerprint != ''").fetchall()
+        for row in ep_rows:
+            fp = row["structural_fingerprint"]
+            if fp:
+                for pattern in fp.split(","):
+                    pattern = pattern.strip()
+                    if pattern:
+                        conn.execute(
+                            "INSERT OR IGNORE INTO entity_fingerprints (entity_id, entity_type, pattern) VALUES (?, ?, ?)",
+                            (row["id"], "episode", pattern),
+                        )
+        th_rows = conn.execute("SELECT id, structural_fingerprint FROM theories WHERE structural_fingerprint != ''").fetchall()
+        for row in th_rows:
+            fp = row["structural_fingerprint"]
+            if fp:
+                for pattern in fp.split(","):
+                    pattern = pattern.strip()
+                    if pattern:
+                        conn.execute(
+                            "INSERT OR IGNORE INTO entity_fingerprints (entity_id, entity_type, pattern) VALUES (?, ?, ?)",
+                            (row["id"], "theory", pattern),
+                        )
+
+    def _backfill_v5_normalized_columns(self, conn: sqlite3.Connection) -> None:
+        """Populate normalized text columns on existing causal_links rows."""
+        rows = conn.execute("SELECT id, cause_text, effect_text FROM causal_links").fetchall()
+        for row in rows:
+            conn.execute(
+                "UPDATE causal_links SET cause_text_normalized = ?, effect_text_normalized = ? WHERE id = ?",
+                (
+                    self._normalize_text(row["cause_text"]),
+                    self._normalize_text(row["effect_text"]),
+                    row["id"],
+                ),
+            )
 
     def close(self) -> None:
         if hasattr(self._local, "conn") and self._local.conn:
@@ -862,12 +1042,16 @@ class Database:
     def save_causal_link(self, link: CausalLink) -> CausalLink:
         with self._lock:
             conn = self._get_conn()
+            norm_cause = self._normalize_text(link.cause_text)
+            norm_effect = self._normalize_text(link.effect_text)
             if link.id is not None:
                 conn.execute(
                     """UPDATE causal_links SET cause_text=?, effect_text=?, mechanism=?,
                        mechanism_detail=?, confidence_level=?, strength=?,
                        observation_count=?, source_episode_ids=?, source_theory_id=?,
-                       project=?, updated_at=? WHERE id=?""",
+                       project=?, updated_at=?,
+                       cause_text_normalized=?, effect_text_normalized=?
+                       WHERE id=?""",
                     (
                         link.cause_text,
                         link.effect_text,
@@ -880,6 +1064,8 @@ class Database:
                         link.source_theory_id,
                         link.project,
                         link.updated_at,
+                        norm_cause,
+                        norm_effect,
                         link.id,
                     ),
                 )
@@ -889,8 +1075,9 @@ class Database:
                        (cause_text, effect_text, mechanism, mechanism_detail,
                         confidence_level, strength, observation_count,
                         source_episode_ids, source_theory_id, project,
-                        created_at, updated_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        created_at, updated_at,
+                        cause_text_normalized, effect_text_normalized)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         link.cause_text,
                         link.effect_text,
@@ -904,6 +1091,8 @@ class Database:
                         link.project,
                         link.created_at,
                         link.updated_at,
+                        norm_cause,
+                        norm_effect,
                     ),
                 )
                 link.id = cur.lastrowid
@@ -986,6 +1175,134 @@ class Database:
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )
+
+    # --- v4: Junction table methods ---
+
+    def add_theory_episode(self, theory_id: str, episode_id: str) -> None:
+        """Write a theory↔episode link to the junction table."""
+        with self._lock:
+            conn = self._get_conn()
+            conn.execute(
+                "INSERT OR IGNORE INTO theory_episodes (theory_id, episode_id) VALUES (?, ?)",
+                (theory_id, episode_id),
+            )
+            conn.commit()
+
+    def get_theory_episode_ids(self, theory_id: str) -> list[str]:
+        """Forward lookup: get episode IDs for a theory."""
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT episode_id FROM theory_episodes WHERE theory_id = ?", (theory_id,)
+        ).fetchall()
+        return [r["episode_id"] for r in rows]
+
+    def get_theories_for_episode(self, episode_id: str) -> list[str]:
+        """Reverse lookup: get theory IDs that reference an episode."""
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT theory_id FROM theory_episodes WHERE episode_id = ?", (episode_id,)
+        ).fetchall()
+        return [r["theory_id"] for r in rows]
+
+    def add_theory_relation(self, theory_id: str, related_id: str) -> None:
+        """Write a theory↔theory relation to the junction table."""
+        with self._lock:
+            conn = self._get_conn()
+            conn.execute(
+                "INSERT OR IGNORE INTO theory_relations (theory_id, related_theory_id) VALUES (?, ?)",
+                (theory_id, related_id),
+            )
+            conn.commit()
+
+    def get_related_theory_ids(self, theory_id: str) -> list[str]:
+        """Get related theory IDs from the junction table."""
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT related_theory_id FROM theory_relations WHERE theory_id = ?", (theory_id,)
+        ).fetchall()
+        return [r["related_theory_id"] for r in rows]
+
+    def add_causal_link_episode(self, link_id: int, episode_id: str) -> None:
+        """Write a causal_link↔episode link to the junction table."""
+        with self._lock:
+            conn = self._get_conn()
+            conn.execute(
+                "INSERT OR IGNORE INTO causal_link_episodes (causal_link_id, episode_id) VALUES (?, ?)",
+                (link_id, episode_id),
+            )
+            conn.commit()
+
+    def get_causal_link_episode_ids(self, link_id: int) -> list[str]:
+        """Get episode IDs for a causal link."""
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT episode_id FROM causal_link_episodes WHERE causal_link_id = ?", (link_id,)
+        ).fetchall()
+        return [r["episode_id"] for r in rows]
+
+    def set_entity_fingerprints(self, entity_id: str, entity_type: str, patterns: list[str]) -> None:
+        """Replace all fingerprint patterns for an entity."""
+        with self._lock:
+            conn = self._get_conn()
+            conn.execute(
+                "DELETE FROM entity_fingerprints WHERE entity_id = ? AND entity_type = ?",
+                (entity_id, entity_type),
+            )
+            for pattern in patterns:
+                if pattern:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO entity_fingerprints (entity_id, entity_type, pattern) VALUES (?, ?, ?)",
+                        (entity_id, entity_type, pattern),
+                    )
+            conn.commit()
+
+    def get_entity_fingerprints(self, entity_id: str, entity_type: str) -> list[str]:
+        """Get fingerprint patterns for an entity."""
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT pattern FROM entity_fingerprints WHERE entity_id = ? AND entity_type = ?",
+            (entity_id, entity_type),
+        ).fetchall()
+        return [r["pattern"] for r in rows]
+
+    def find_entities_by_fingerprint(self, pattern: str, entity_type: Optional[str] = None) -> list[dict[str, str]]:
+        """Find entities that have a specific fingerprint pattern."""
+        conn = self._get_conn()
+        if entity_type:
+            rows = conn.execute(
+                "SELECT entity_id, entity_type FROM entity_fingerprints WHERE pattern = ? AND entity_type = ?",
+                (pattern, entity_type),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT entity_id, entity_type FROM entity_fingerprints WHERE pattern = ?",
+                (pattern,),
+            ).fetchall()
+        return [{"entity_id": r["entity_id"], "entity_type": r["entity_type"]} for r in rows]
+
+    @staticmethod
+    def _normalize_text(text: str) -> str:
+        """Normalize text for case/whitespace-insensitive comparison."""
+        return re.sub(r'\s+', ' ', text.strip().lower())
+
+    def list_causal_links_normalized(
+        self, cause_text: str, effect_text: str, limit: int = 5
+    ) -> list[CausalLink]:
+        """Case-insensitive, whitespace-normalized causal link dedup lookup.
+
+        Uses the idx_causal_normalized composite index on
+        (cause_text_normalized, effect_text_normalized) for O(log n) lookup.
+        """
+        norm_cause = self._normalize_text(cause_text)
+        norm_effect = self._normalize_text(effect_text)
+        conn = self._get_conn()
+        rows = conn.execute(
+            """SELECT * FROM causal_links
+               WHERE cause_text_normalized = ? AND effect_text_normalized = ?
+               ORDER BY observation_count DESC LIMIT ?""",
+            (norm_cause, norm_effect, limit),
+        ).fetchall()
+        return [self._row_to_causal_link(r) for r in rows]
 
     # --- Failure Records ---
 

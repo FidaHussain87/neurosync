@@ -532,7 +532,7 @@ def handle_query(params: dict[str, Any]) -> dict[str, Any]:
         return {"mode": "analogy", "results": analogies}
 
     if mode == "causal":
-        neighborhood = _causal.get_causal_neighborhood(query)
+        neighborhood = _causal.get_causal_neighborhood(query, project=project)
         return {"mode": "causal", "results": neighborhood}
 
     if mode == "failures":

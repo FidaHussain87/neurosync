@@ -15,7 +15,7 @@ from neurosync.models import (
 class TestDatabase:
     def test_schema_initialized(self, db):
         stats = db.stats()
-        assert stats["schema_version"] == 3
+        assert stats["schema_version"] == 5
         assert stats["sessions"] == 0
 
     def test_save_and_get_session(self, db):
@@ -207,7 +207,7 @@ class TestDatabase:
         database = Database(config)
         # Verify migration ran: schema at v3
         stats = database.stats()
-        assert stats["schema_version"] == 3
+        assert stats["schema_version"] == 5
         # Insert and read episode with v2 + v3 columns
         from neurosync.models import Episode, Session
         session = Session(project="test")
@@ -283,7 +283,7 @@ class TestDatabase:
         from neurosync.db import Database
         database = Database(config)
         stats = database.stats()
-        assert stats["schema_version"] == 3
+        assert stats["schema_version"] == 5
         # Verify causal_links table exists
         from neurosync.models import CausalLink
         link = CausalLink(cause_text="A", effect_text="B")
@@ -301,7 +301,7 @@ class TestDatabase:
         # Running again should not fail
         db2 = Database(config)
         stats = db2.stats()
-        assert stats["schema_version"] == 3
+        assert stats["schema_version"] == 5
         db2.close()
 
     def test_save_episode_causal_roundtrip(self, db):
@@ -523,7 +523,7 @@ class TestDatabase:
         # Second open triggers _init_schema again — should be a no-op
         db2 = Database(config)
         stats2 = db2.stats()
-        assert stats1["schema_version"] == stats2["schema_version"] == 3
+        assert stats1["schema_version"] == stats2["schema_version"] == 5
         db2.close()
 
     # --- Phase 3: JSON corruption handling ---
@@ -560,5 +560,297 @@ class TestDatabase:
         from neurosync.db import Database
         with Database(config) as database:
             stats = database.stats()
-            assert stats["schema_version"] == 3
+            assert stats["schema_version"] == 5
         # After context manager exit, connection should be closed
+
+    # --- v4: Migration v3→v4 ---
+
+    def test_migration_v3_to_v5(self, config):
+        """Test that v3 databases get migrated to v5 with junction tables, backfill, and normalized columns."""
+        import sqlite3
+        conn = sqlite3.connect(config.sqlite_path)
+        conn.row_factory = sqlite3.Row
+        # Create a v3 database with existing data to backfill
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
+            INSERT INTO schema_version (version) VALUES (3);
+            CREATE TABLE IF NOT EXISTS sessions (
+                id TEXT PRIMARY KEY, project TEXT DEFAULT '', branch TEXT DEFAULT '',
+                started_at TEXT NOT NULL, ended_at TEXT, duration_seconds INTEGER DEFAULT 0,
+                summary TEXT DEFAULT '', metadata TEXT DEFAULT '{}'
+            );
+            CREATE TABLE IF NOT EXISTS episodes (
+                id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id),
+                timestamp TEXT NOT NULL, event_type TEXT DEFAULT 'decision',
+                content TEXT DEFAULT '', context TEXT DEFAULT '',
+                files_touched TEXT DEFAULT '[]', layers_touched TEXT DEFAULT '[]',
+                signal_weight REAL DEFAULT 1.0, consolidated INTEGER DEFAULT 0,
+                consolidated_at TEXT, cause TEXT DEFAULT '', effect TEXT DEFAULT '',
+                reasoning TEXT DEFAULT '', quality_score INTEGER, metadata TEXT DEFAULT '{}',
+                reinforcement_count INTEGER DEFAULT 0, last_accessed TEXT,
+                structural_fingerprint TEXT DEFAULT ''
+            );
+            CREATE TABLE IF NOT EXISTS signals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, episode_id TEXT NOT NULL,
+                signal_type TEXT NOT NULL, raw_value REAL DEFAULT 0.0,
+                multiplier REAL DEFAULT 1.0, timestamp TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS theories (
+                id TEXT PRIMARY KEY, content TEXT DEFAULT '', scope TEXT DEFAULT 'craft',
+                scope_qualifier TEXT DEFAULT '', confidence REAL DEFAULT 0.5,
+                confirmation_count INTEGER DEFAULT 0, contradiction_count INTEGER DEFAULT 0,
+                first_observed TEXT NOT NULL, last_confirmed TEXT,
+                source_episodes TEXT DEFAULT '[]', superseded_by TEXT,
+                active INTEGER DEFAULT 1, description_length INTEGER DEFAULT 0,
+                parent_theory_id TEXT, related_theories TEXT DEFAULT '[]',
+                last_applied TEXT, application_count INTEGER DEFAULT 0,
+                validation_status TEXT DEFAULT 'unvalidated', metadata TEXT DEFAULT '{}',
+                hierarchy_depth INTEGER DEFAULT 0, structural_fingerprint TEXT DEFAULT ''
+            );
+            CREATE TABLE IF NOT EXISTS contradictions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, theory_id TEXT NOT NULL,
+                episode_id TEXT NOT NULL, description TEXT DEFAULT '',
+                resolution TEXT, resolved_at TEXT, created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS user_model (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, topic TEXT NOT NULL,
+                project TEXT DEFAULT '', familiarity REAL DEFAULT 0.5,
+                last_seen TEXT NOT NULL, times_seen INTEGER DEFAULT 0,
+                times_explained INTEGER DEFAULT 0, metadata TEXT DEFAULT '{}'
+            );
+            CREATE TABLE IF NOT EXISTS causal_links (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, cause_text TEXT NOT NULL,
+                effect_text TEXT NOT NULL, mechanism TEXT NOT NULL DEFAULT 'direct',
+                mechanism_detail TEXT DEFAULT '', confidence_level TEXT DEFAULT 'observed',
+                strength REAL DEFAULT 0.5, observation_count INTEGER DEFAULT 1,
+                source_episode_ids TEXT DEFAULT '[]', source_theory_id TEXT DEFAULT '',
+                project TEXT DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS failure_records (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, what_failed TEXT NOT NULL,
+                why_failed TEXT NOT NULL DEFAULT '', what_worked TEXT DEFAULT '',
+                category TEXT DEFAULT 'approach', project TEXT DEFAULT '',
+                context TEXT DEFAULT '', source_episode_id TEXT DEFAULT '',
+                severity INTEGER DEFAULT 3, occurrence_count INTEGER DEFAULT 1,
+                created_at TEXT NOT NULL, last_seen TEXT NOT NULL
+            );
+        """)
+        # Insert data to verify backfill
+        conn.execute("INSERT INTO sessions (id, project, started_at) VALUES ('s1', 'test', '2026-01-01')")
+        conn.execute("INSERT INTO episodes (id, session_id, timestamp, content, structural_fingerprint) VALUES ('ep1', 's1', '2026-01-01', 'test episode', 'caching,retry_logic')")
+        conn.execute("INSERT INTO theories (id, content, first_observed, source_episodes, related_theories, structural_fingerprint) VALUES ('th1', 'test theory', '2026-01-01', '[\"ep1\"]', '[\"th2\"]', 'caching')")
+        conn.execute("INSERT INTO theories (id, content, first_observed, source_episodes, related_theories) VALUES ('th2', 'other theory', '2026-01-01', '[]', '[]')")
+        conn.execute("INSERT INTO causal_links (cause_text, effect_text, source_episode_ids, created_at, updated_at) VALUES ('A', 'B', '[\"ep1\"]', '2026-01-01', '2026-01-01')")
+        conn.commit()
+        conn.close()
+
+        from neurosync.db import Database
+        database = Database(config)
+        stats = database.stats()
+        assert stats["schema_version"] == 5
+        # Verify junction tables were created and backfilled
+        assert database.get_theory_episode_ids("th1") == ["ep1"]
+        assert database.get_theories_for_episode("ep1") == ["th1"]
+        assert "th2" in database.get_related_theory_ids("th1")
+        # Verify entity_fingerprints backfill
+        ep_fps = database.get_entity_fingerprints("ep1", "episode")
+        assert "caching" in ep_fps
+        assert "retry_logic" in ep_fps
+        th_fps = database.get_entity_fingerprints("th1", "theory")
+        assert "caching" in th_fps
+        # Verify causal_link_episodes backfill
+        cl_eps = database.get_causal_link_episode_ids(1)
+        assert "ep1" in cl_eps
+        # Verify v5 normalized columns backfill
+        results = database.list_causal_links_normalized("a", "b")
+        assert len(results) == 1
+        assert results[0].cause_text == "A"
+        assert results[0].effect_text == "B"
+        database.close()
+
+    def test_migration_v4_to_v5(self, config):
+        """Test that v4 databases get normalized columns added and backfilled."""
+        import sqlite3
+        conn = sqlite3.connect(config.sqlite_path)
+        conn.row_factory = sqlite3.Row
+        # Create a minimal v4 database (has junction tables but no normalized columns)
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
+            INSERT INTO schema_version (version) VALUES (4);
+            CREATE TABLE IF NOT EXISTS sessions (
+                id TEXT PRIMARY KEY, project TEXT DEFAULT '', branch TEXT DEFAULT '',
+                started_at TEXT NOT NULL, ended_at TEXT, duration_seconds INTEGER DEFAULT 0,
+                summary TEXT DEFAULT '', metadata TEXT DEFAULT '{}'
+            );
+            CREATE TABLE IF NOT EXISTS episodes (
+                id TEXT PRIMARY KEY, session_id TEXT NOT NULL,
+                timestamp TEXT NOT NULL, event_type TEXT DEFAULT 'decision',
+                content TEXT DEFAULT '', context TEXT DEFAULT '',
+                files_touched TEXT DEFAULT '[]', layers_touched TEXT DEFAULT '[]',
+                signal_weight REAL DEFAULT 1.0, consolidated INTEGER DEFAULT 0,
+                consolidated_at TEXT, cause TEXT DEFAULT '', effect TEXT DEFAULT '',
+                reasoning TEXT DEFAULT '', quality_score INTEGER, metadata TEXT DEFAULT '{}',
+                reinforcement_count INTEGER DEFAULT 0, last_accessed TEXT,
+                structural_fingerprint TEXT DEFAULT ''
+            );
+            CREATE TABLE IF NOT EXISTS signals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, episode_id TEXT NOT NULL,
+                signal_type TEXT NOT NULL, raw_value REAL DEFAULT 0.0,
+                multiplier REAL DEFAULT 1.0, timestamp TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS theories (
+                id TEXT PRIMARY KEY, content TEXT DEFAULT '', scope TEXT DEFAULT 'craft',
+                scope_qualifier TEXT DEFAULT '', confidence REAL DEFAULT 0.5,
+                confirmation_count INTEGER DEFAULT 0, contradiction_count INTEGER DEFAULT 0,
+                first_observed TEXT NOT NULL, last_confirmed TEXT,
+                source_episodes TEXT DEFAULT '[]', superseded_by TEXT,
+                active INTEGER DEFAULT 1, description_length INTEGER DEFAULT 0,
+                parent_theory_id TEXT, related_theories TEXT DEFAULT '[]',
+                last_applied TEXT, application_count INTEGER DEFAULT 0,
+                validation_status TEXT DEFAULT 'unvalidated', metadata TEXT DEFAULT '{}',
+                hierarchy_depth INTEGER DEFAULT 0, structural_fingerprint TEXT DEFAULT ''
+            );
+            CREATE TABLE IF NOT EXISTS contradictions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, theory_id TEXT NOT NULL,
+                episode_id TEXT NOT NULL, description TEXT DEFAULT '',
+                resolution TEXT, resolved_at TEXT, created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS user_model (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, topic TEXT NOT NULL,
+                project TEXT DEFAULT '', familiarity REAL DEFAULT 0.5,
+                last_seen TEXT NOT NULL, times_seen INTEGER DEFAULT 0,
+                times_explained INTEGER DEFAULT 0, metadata TEXT DEFAULT '{}'
+            );
+            CREATE TABLE IF NOT EXISTS causal_links (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, cause_text TEXT NOT NULL,
+                effect_text TEXT NOT NULL, mechanism TEXT NOT NULL DEFAULT 'direct',
+                mechanism_detail TEXT DEFAULT '', confidence_level TEXT DEFAULT 'observed',
+                strength REAL DEFAULT 0.5, observation_count INTEGER DEFAULT 1,
+                source_episode_ids TEXT DEFAULT '[]', source_theory_id TEXT DEFAULT '',
+                project TEXT DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS failure_records (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, what_failed TEXT NOT NULL,
+                why_failed TEXT NOT NULL DEFAULT '', what_worked TEXT DEFAULT '',
+                category TEXT DEFAULT 'approach', project TEXT DEFAULT '',
+                context TEXT DEFAULT '', source_episode_id TEXT DEFAULT '',
+                severity INTEGER DEFAULT 3, occurrence_count INTEGER DEFAULT 1,
+                created_at TEXT NOT NULL, last_seen TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS theory_episodes (
+                theory_id TEXT NOT NULL, episode_id TEXT NOT NULL,
+                PRIMARY KEY (theory_id, episode_id)
+            );
+            CREATE TABLE IF NOT EXISTS theory_relations (
+                theory_id TEXT NOT NULL, related_theory_id TEXT NOT NULL,
+                PRIMARY KEY (theory_id, related_theory_id)
+            );
+            CREATE TABLE IF NOT EXISTS causal_link_episodes (
+                causal_link_id INTEGER NOT NULL, episode_id TEXT NOT NULL,
+                PRIMARY KEY (causal_link_id, episode_id)
+            );
+            CREATE TABLE IF NOT EXISTS entity_fingerprints (
+                entity_id TEXT NOT NULL, entity_type TEXT NOT NULL, pattern TEXT NOT NULL,
+                PRIMARY KEY (entity_id, entity_type, pattern)
+            );
+        """)
+        # Insert causal link with mixed casing to verify normalized backfill
+        conn.execute(
+            "INSERT INTO causal_links (cause_text, effect_text, created_at, updated_at) "
+            "VALUES ('Missing  Index', 'Slow  Query', '2026-01-01', '2026-01-01')"
+        )
+        conn.commit()
+        conn.close()
+
+        from neurosync.db import Database
+        database = Database(config)
+        stats = database.stats()
+        assert stats["schema_version"] == 5
+        # Verify normalized columns were added and backfilled
+        results = database.list_causal_links_normalized("missing index", "slow query")
+        assert len(results) == 1
+        assert results[0].cause_text == "Missing  Index"  # original casing preserved
+        # Verify new links also get normalized columns written
+        from neurosync.models import CausalLink
+        database.save_causal_link(CausalLink(cause_text="High Traffic", effect_text="Increased Latency"))
+        results = database.list_causal_links_normalized("high traffic", "increased latency")
+        assert len(results) == 1
+        assert results[0].cause_text == "High Traffic"
+        database.close()
+
+    # --- v4: Junction table tests ---
+
+    def test_theory_episode_junction(self, db):
+        """Test forward + reverse lookup for theory↔episode junction."""
+        from neurosync.models import Session, Episode, Theory
+        session = Session()
+        db.save_session(session)
+        ep1 = Episode(session_id=session.id, content="ep1")
+        ep2 = Episode(session_id=session.id, content="ep2")
+        db.save_episode(ep1)
+        db.save_episode(ep2)
+        theory = Theory(content="test theory")
+        db.save_theory(theory)
+        db.add_theory_episode(theory.id, ep1.id)
+        db.add_theory_episode(theory.id, ep2.id)
+        # Idempotent: adding again should not fail
+        db.add_theory_episode(theory.id, ep1.id)
+        # Forward lookup
+        ep_ids = db.get_theory_episode_ids(theory.id)
+        assert set(ep_ids) == {ep1.id, ep2.id}
+        # Reverse lookup
+        th_ids = db.get_theories_for_episode(ep1.id)
+        assert theory.id in th_ids
+
+    def test_theory_relation_junction(self, db):
+        """Test bidirectional relation links."""
+        from neurosync.models import Theory
+        t1 = Theory(content="theory 1")
+        t2 = Theory(content="theory 2")
+        db.save_theory(t1)
+        db.save_theory(t2)
+        db.add_theory_relation(t1.id, t2.id)
+        db.add_theory_relation(t2.id, t1.id)
+        assert t2.id in db.get_related_theory_ids(t1.id)
+        assert t1.id in db.get_related_theory_ids(t2.id)
+
+    def test_causal_link_episode_junction(self, db):
+        """Test causal link ↔ episode junction."""
+        from neurosync.models import CausalLink
+        link = CausalLink(cause_text="X", effect_text="Y")
+        db.save_causal_link(link)
+        db.add_causal_link_episode(link.id, "ep-a")
+        db.add_causal_link_episode(link.id, "ep-b")
+        ep_ids = db.get_causal_link_episode_ids(link.id)
+        assert set(ep_ids) == {"ep-a", "ep-b"}
+
+    def test_entity_fingerprints(self, db):
+        """Test set/get/find fingerprint patterns."""
+        db.set_entity_fingerprints("ep1", "episode", ["caching", "retry_logic"])
+        fps = db.get_entity_fingerprints("ep1", "episode")
+        assert set(fps) == {"caching", "retry_logic"}
+        # Find by pattern
+        results = db.find_entities_by_fingerprint("caching")
+        assert any(r["entity_id"] == "ep1" for r in results)
+        # Filter by type
+        results = db.find_entities_by_fingerprint("caching", entity_type="episode")
+        assert len(results) >= 1
+        results = db.find_entities_by_fingerprint("caching", entity_type="theory")
+        assert len(results) == 0
+
+    def test_entity_fingerprints_replace(self, db):
+        """Test that set_entity_fingerprints replaces old patterns."""
+        db.set_entity_fingerprints("ep1", "episode", ["caching", "retry_logic"])
+        assert set(db.get_entity_fingerprints("ep1", "episode")) == {"caching", "retry_logic"}
+        # Replace with new patterns
+        db.set_entity_fingerprints("ep1", "episode", ["auth_permission"])
+        fps = db.get_entity_fingerprints("ep1", "episode")
+        assert fps == ["auth_permission"]
+
+    def test_list_causal_links_normalized(self, db):
+        """Test case-insensitive causal link lookup."""
+        from neurosync.models import CausalLink
+        db.save_causal_link(CausalLink(cause_text="ChromaDB Error", effect_text="Search Failure"))
+        results = db.list_causal_links_normalized("chromadb error", "search failure")
+        assert len(results) == 1
+        assert results[0].cause_text == "ChromaDB Error"
