@@ -1,0 +1,102 @@
+name: Bug Report
+description: Report a bug in NeuroSync
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug! Please fill out the sections below so we can reproduce and fix it.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Bug description
+      description: What happened? What did you expect to happen instead?
+      placeholder: "When I call neurosync_recall, it returns an empty result even though I have 50+ episodes..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: How can we reproduce this?
+      value: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+
+  - type: textarea
+    id: neurosync-status
+    attributes:
+      label: Output of `neurosync status`
+      description: Run `neurosync status` and paste the JSON output here.
+      render: json
+    validations:
+      required: true
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Affected component
+      description: Which part of NeuroSync is affected?
+      options:
+        - MCP Server (mcp_server.py)
+        - Database / Migrations (db.py)
+        - VectorStore / ChromaDB (vectorstore.py)
+        - Recall / Working Memory (working.py, retrieval.py)
+        - Recording / Episodic Memory (episodic.py)
+        - Consolidation (consolidation.py)
+        - Theories / Semantic Memory (semantic.py)
+        - CLI (cli.py)
+        - Configuration (config.py)
+        - Other / Not sure
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: NeuroSync version
+      description: Run `neurosync --version` or check `neurosync/version.py`
+      placeholder: "0.4.0"
+    validations:
+      required: true
+
+  - type: input
+    id: python-version
+    attributes:
+      label: Python version
+      placeholder: "3.11.5"
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: "macOS 15.3 / Ubuntu 24.04 / Windows 11"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: ai-tool
+    attributes:
+      label: AI tool
+      description: Which AI coding tool are you using NeuroSync with?
+      options:
+        - Claude Code (CLI)
+        - Cline (VS Code)
+        - OpenCode
+        - Other (specify in description)
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Any error messages, stderr output, or MCP server logs.
+      render: text

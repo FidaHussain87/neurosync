@@ -1,0 +1,55 @@
+name: Feature Request
+description: Suggest a new feature or improvement
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Have an idea for NeuroSync? We'd love to hear it. Please describe what you want and why.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or motivation
+      description: What problem does this solve? What's frustrating about the current behavior?
+      placeholder: "I often lose context when switching between projects because..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: How would you like this to work? Be as specific as you can.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Which area of NeuroSync does this relate to?
+      options:
+        - Memory (recording, recall, episodes)
+        - Consolidation (theories, clustering, MDL)
+        - Protocol (CLAUDE.md rules, agent behavior)
+        - MCP Tools (new tool, modify existing tool)
+        - CLI (commands, output)
+        - Configuration
+        - Documentation
+        - Testing
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Have you considered other ways to solve this? Any workarounds you're using?
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Anything else? Screenshots, links to related issues, etc.
