@@ -2,7 +2,7 @@
 
 ## What This Is
 
-NeuroSync is a developer-focused memory MCP server (v0.4.0). It provides episodic, semantic, and working memory — plus cognitive features (hierarchy, forgetting, analogy, causal reasoning, failure modeling) — for AI coding agents via 10 MCP tools.
+NeuroSync is a developer-focused memory MCP server (v0.5.0). It provides episodic, semantic, and working memory — plus cognitive features (hierarchy, forgetting, analogy, causal reasoning, failure modeling, user familiarity tracking) — for AI coding agents via 10 MCP tools. Supports SQLite (default) and PostgreSQL backends.
 
 ## NeuroSync Memory Protocol
 
@@ -37,7 +37,11 @@ Call `neurosync_record` with structured episodes when the session ends. Write ca
 
 ### What's automatic
 
-- **Auto-consolidation** — theories are extracted automatically when enough episodes accumulate (no manual `consolidate` needed)
+- **Auto-consolidation** — theories are extracted automatically when enough episodes accumulate (no manual `consolidate` needed). Uses TF-IDF keyword extraction and multi-episode merge heuristics (zero LLM tokens).
+- **Forgetting pass** — after consolidation, Ebbinghaus retention curves prune low-value episodes and decay stale theories
+- **User familiarity tracking** — topics you know well are suppressed from recall; corrections reduce familiarity
+- **7 active signal types** — CORRECTION (2^N), DEPTH (layer count), SURPRISE (contradicts theory), REPETITION (re-explained), EXPLICIT (x10), INTUITION (1-5), PASSIVE (x0.3). DURATION is defined but not yet wired (requires session-level timing).
+- **Outcome-based confidence** — session correction count adjusts recalled theory confidence
 - **Passive git observation** — file changes and commits are recorded as low-weight episodes automatically
 - **Dynamic hints** — tool responses include contextual guidance
 
@@ -48,19 +52,20 @@ Call `neurosync_record` with structured episodes when the session ends. Write ca
   - `cli.py` — CLI commands: serve, consolidate, status, import-starter-pack, generate-protocol, install-hook, graph-sync, graph-status, reset
   - `config.py` — Configuration (env > config.json > defaults)
   - `models.py` — Dataclasses (Session, Episode, Signal, Theory, Contradiction, UserKnowledge)
-  - `db.py` — SQLite database (WAL mode, thread-safe, schema migrations)
+  - `db.py` — SQLite database (WAL mode, thread-safe, schema migrations) — default backend
+  - `pg_db.py` — PostgreSQL database (connection pooling, JSONB) — optional backend
   - `vectorstore.py` — ChromaDB wrapper (episodes + theories collections)
   - `episodic.py` — Layer 1: session/episode CRUD, causal episodes, continuations
   - `semantic.py` — Layer 2: theory CRUD, confidence, linking, validation tracking
   - `working.py` — Layer 3: recall with winner-take-all, continuation priority
+  - `retrieval.py` — Full recall pipeline with user familiarity filtering and parent context
+  - `user_model.py` — Topic familiarity tracking, meta-learning (correction rate per topic)
   - `consolidation.py` — Consolidation engine: cluster -> extract -> MDL prune -> auto-linking + auto-trigger
   - `signals.py` — Signal weight calculations (8 types, including PASSIVE)
   - `quality.py` — Episode quality scoring (0-7 scale, warns on low quality)
   - `hooks.py` — Claude Code hook configuration for auto-recall on session start
   - `git_observer.py` — Passive git state observation at session boundaries
   - `protocol.py` — Minimal protocol text and CLAUDE.md generator
-  - `user_model.py` — Topic familiarity tracking
-  - `retrieval.py` — Full recall pipeline with application tracking
   - `starter_pack_loader.py` — YAML starter pack loader
   - `forgetting.py` — Ebbinghaus decay, spaced repetition, active pruning
   - `analogy.py` — Structural fingerprinting, combined semantic+structural search
@@ -109,15 +114,20 @@ cd frontend && npm run build                # production build to frontend/dist/
 ## Architecture
 
 Three-layer memory system:
-1. **Episodic** (Layer 1) — Raw session events stored in SQLite + ChromaDB
+1. **Episodic** (Layer 1) — Raw session events stored in SQLite/PostgreSQL + ChromaDB
 2. **Semantic** (Layer 2) — Consolidated theories with confidence scores
-3. **Working** (Layer 3) — Context-aware recall with winner-take-all activation
+3. **Working** (Layer 3) — Context-aware recall via RetrievalPipeline with user familiarity filtering
 
-Data flows: record -> episodes -> auto-consolidation -> theories -> recall -> graph-sync -> Neo4j -> frontend visualization
+Data flows: record -> episodes -> auto-consolidation -> theories -> forgetting pass -> recall -> graph-sync -> Neo4j -> frontend visualization
+
+### Database Backends
+
+- **SQLite** (default) — WAL mode, thread-safe, zero setup
+- **PostgreSQL** (optional) — Connection pooling, JSONB columns. Set `NEUROSYNC_DB_BACKEND=postgresql` and `NEUROSYNC_PG_DSN` to switch.
 
 ### Degraded Mode
 
-SQLite is the source of truth; ChromaDB is an acceleration layer. If ChromaDB is unavailable (corrupted HNSW index, permission error, missing dependency), NeuroSync runs in **degraded mode**:
+The primary database (SQLite or PostgreSQL) is the source of truth; ChromaDB is an acceleration layer. If ChromaDB is unavailable (corrupted HNSW index, permission error, missing dependency), NeuroSync runs in **degraded mode**:
 - Recording episodes and theories still works (SQLite writes always succeed)
 - Vector search (semantic recall, analogy, duplicate detection) returns empty results
 - The MCP server logs a warning at startup and continues operating

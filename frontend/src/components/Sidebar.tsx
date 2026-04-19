@@ -21,6 +21,9 @@ interface Props {
   onToggleType: (type: NodeType) => void;
   searchQuery: string;
   onSearchChange: (query: string) => void;
+  projects: string[];
+  projectFilter: string;
+  onProjectChange: (project: string) => void;
   onRunPrebuilt: (cypher: string, params?: Record<string, unknown>) => void;
   onRunCustom: (cypher: string) => void;
   onLoadOverview: () => void;
@@ -33,6 +36,7 @@ export default function Sidebar({
   onConnect, onDisconnect,
   visibleTypes, onToggleType,
   searchQuery, onSearchChange,
+  projects, projectFilter, onProjectChange,
   onRunPrebuilt, onRunCustom,
   onLoadOverview,
   nodeCount, linkCount,
@@ -85,6 +89,23 @@ export default function Sidebar({
               className="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1.5 text-sm text-gray-200 focus:border-blue-500 focus:outline-none"
             />
           </div>
+
+          {/* Project filter */}
+          {projects.length > 0 && (
+            <div className="border-b border-gray-800 pb-3">
+              <h3 className="text-xs font-medium text-gray-400 uppercase tracking-wider mb-2">Project</h3>
+              <select
+                value={projectFilter}
+                onChange={e => onProjectChange(e.target.value)}
+                className="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1.5 text-sm text-gray-200 focus:border-blue-500 focus:outline-none"
+              >
+                <option value="">All projects</option>
+                {projects.map(p => (
+                  <option key={p} value={p}>{p}</option>
+                ))}
+              </select>
+            </div>
+          )}
 
           {/* Node type filters */}
           <div className="border-b border-gray-800 pb-3">

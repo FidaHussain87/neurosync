@@ -112,11 +112,14 @@ RETURN t, r1, e, r2, s`,
   },
   {
     name: 'knowledge_graph_overview',
-    description: 'Full graph overview — all nodes and relationships',
-    cypher: `MATCH (n)
-OPTIONAL MATCH (n)-[r]->(m)
+    description: 'Full graph overview — all connected nodes',
+    cypher: `MATCH (n)-[r]->(m)
 RETURN n, r, m
-LIMIT 500`,
+LIMIT 1000
+UNION ALL
+MATCH (orphan) WHERE NOT (orphan)--()
+RETURN orphan AS n, null AS r, null AS m
+LIMIT 100`,
   },
   {
     name: 'episode_to_theory_lineage',

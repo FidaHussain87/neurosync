@@ -44,6 +44,9 @@ source .venv/bin/activate    # On Windows: .venv\Scripts\activate
 # 4. Install in dev mode
 pip install -e ".[dev]"
 
+# Optional: install with all backends
+pip install -e ".[dev,neo4j,postgresql]"
+
 # 5. Verify everything works
 pytest --cov=neurosync -v
 ruff check neurosync/
@@ -143,7 +146,7 @@ Use [Conventional Commits](https://www.conventionalcommits.org/) format:
 
 ### Scopes (optional)
 
-Use the module name: `db`, `vectorstore`, `mcp`, `cli`, `episodic`, `semantic`, `working`, `consolidation`, `config`, `protocol`, `signals`, `quality`, `retrieval`, `graph`, `frontend`.
+Use the module name: `db`, `pg_db`, `vectorstore`, `mcp`, `cli`, `episodic`, `semantic`, `working`, `retrieval`, `user_model`, `consolidation`, `forgetting`, `analogy`, `failure`, `hierarchy`, `causal`, `config`, `protocol`, `signals`, `quality`, `graph`, `frontend`.
 
 ### Examples
 
@@ -316,35 +319,45 @@ tests/test_<feature>.py        # e.g., tests/test_hardening.py
 Read `docs/architecture.md` for the full design. Quick summary:
 
 ```
-record -> episodes (SQLite + ChromaDB)
-       -> auto-consolidation
-       -> theories (SQLite + ChromaDB)
-       -> recall (winner-take-all)
+record -> episodes (SQLite/PostgreSQL + ChromaDB)
+       -> auto-consolidation (TF-IDF + causal merge)
+       -> theories (SQLite/PostgreSQL + ChromaDB)
+       -> forgetting pass (Ebbinghaus decay)
+       -> recall (RetrievalPipeline with winner-take-all + UserModel)
+       -> graph-sync -> Neo4j -> frontend visualization (optional)
 ```
 
-**Key principle:** SQLite is the source of truth. ChromaDB is an acceleration layer. Everything must work (in degraded mode) without ChromaDB.
+**Key principle:** The primary database (SQLite or PostgreSQL) is the source of truth. ChromaDB is an acceleration layer. Everything must work (in degraded mode) without ChromaDB.
 
 ### Module map
 
 | Module | Layer | Responsibility |
 |--------|-------|---------------|
-| `db.py` | Storage | SQLite CRUD, migrations, JSON handling |
+| `db.py` | Storage | SQLite CRUD, migrations, JSON handling (default backend) |
+| `pg_db.py` | Storage | PostgreSQL CRUD, connection pooling, JSONB (optional backend) |
 | `vectorstore.py` | Storage | ChromaDB wrapper, safe search |
-| `episodic.py` | Layer 1 | Session/episode lifecycle |
-| `semantic.py` | Layer 2 | Theory CRUD, confidence |
+| `episodic.py` | Layer 1 | Session/episode lifecycle, signal computation |
+| `semantic.py` | Layer 2 | Theory CRUD, confidence, linking |
 | `working.py` | Layer 3 | Recall with winner-take-all |
-| `consolidation.py` | Engine | Cluster + extract + MDL prune |
+| `retrieval.py` | Layer 3 | Full recall pipeline with familiarity filtering |
+| `user_model.py` | Layer 3 | Topic familiarity tracking, meta-learning |
+| `consolidation.py` | Engine | Cluster + TF-IDF extract + causal merge + MDL prune |
+| `forgetting.py` | Engine | Ebbinghaus decay, spaced repetition, active pruning |
+| `analogy.py` | Engine | Structural fingerprinting, semantic+structural search |
+| `failure.py` | Engine | Failure records, proactive warnings, anti-patterns |
+| `hierarchy.py` | Engine | Theory hierarchy traversal, semantic parents, merging |
+| `causal.py` | Engine | Causal graph construction, querying, semantic fallback |
 | `mcp_server.py` | Interface | MCP JSON-RPC tool handlers |
 | `cli.py` | Interface | CLI commands |
-| `signals.py` | Scoring | Episode weight calculation |
-| `quality.py` | Scoring | Episode quality scoring |
+| `signals.py` | Scoring | Episode weight calculation (7 active + 1 unwired) |
+| `quality.py` | Scoring | Episode quality scoring (0-7 scale) |
 | `graph.py` | Storage | Neo4j knowledge graph sync & querying |
 | `frontend/` | Visualization | React + TypeScript interactive graph viewer |
 
 ## What Not to Do
 
 - **Don't add MCP tools without discussion.** The tool count is deliberate. Propose new capabilities as extensions to existing tools first.
-- **Don't add external dependencies** without opening an issue. NeuroSync intentionally has minimal deps (chromadb, pyyaml).
+- **Don't add external dependencies** without opening an issue. NeuroSync intentionally has minimal core deps (chromadb, pyyaml). Optional deps (neo4j, psycopg2-binary) live in `[project.optional-dependencies]`.
 - **Don't break Python 3.9 compatibility.** No walrus operators in required paths, no `X | None` union syntax.
 - **Don't skip tests.** Every behavioral change needs a test.
 - **Don't force-push to shared branches.** Rebase locally before pushing, but don't rewrite shared history.

@@ -212,19 +212,63 @@ export default function GraphCanvas({ graphData, selectedNode, onNodeClick, onBa
   const [zoomLevel, setZoomLevel] = useState(1);
   const prevResetCountRef = useRef(viewResetCount);
   const timeRef = useRef(0);
+  const idleTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const animatingRef = useRef(true);
 
-  // ── Animation tick (for star twinkle, breathing) ──
+  // ── Idle-aware animation tick (pauses after 5s of no interaction) ──
   useEffect(() => {
     let running = true;
     let last = performance.now();
+    let rafId = 0;
+
     const tick = (now: number) => {
       if (!running) return;
-      timeRef.current += (now - last) * 0.001; // seconds
+      timeRef.current += (now - last) * 0.001;
       last = now;
-      requestAnimationFrame(tick);
+      if (animatingRef.current) {
+        rafId = requestAnimationFrame(tick);
+      }
     };
-    requestAnimationFrame(tick);
-    return () => { running = false; };
+
+    const startAnimating = () => {
+      if (!animatingRef.current) {
+        animatingRef.current = true;
+        last = performance.now();
+        rafId = requestAnimationFrame(tick);
+      }
+      // Reset idle timer
+      if (idleTimeoutRef.current) clearTimeout(idleTimeoutRef.current);
+      idleTimeoutRef.current = setTimeout(() => {
+        animatingRef.current = false;
+      }, 5000); // Pause animation after 5s idle
+    };
+
+    // Start initial animation
+    startAnimating();
+    rafId = requestAnimationFrame(tick);
+
+    // Wake on user interaction
+    const el = containerRef.current;
+    const wake = () => startAnimating();
+    if (el) {
+      el.addEventListener('mousemove', wake, { passive: true });
+      el.addEventListener('mousedown', wake, { passive: true });
+      el.addEventListener('wheel', wake, { passive: true });
+      el.addEventListener('touchstart', wake, { passive: true });
+    }
+
+    return () => {
+      running = false;
+      animatingRef.current = false;
+      cancelAnimationFrame(rafId);
+      if (idleTimeoutRef.current) clearTimeout(idleTimeoutRef.current);
+      if (el) {
+        el.removeEventListener('mousemove', wake);
+        el.removeEventListener('mousedown', wake);
+        el.removeEventListener('wheel', wake);
+        el.removeEventListener('touchstart', wake);
+      }
+    };
   }, []);
 
   // ── Container resize tracking ──
@@ -238,6 +282,15 @@ export default function GraphCanvas({ graphData, selectedNode, onNodeClick, onBa
     observer.observe(el);
     return () => observer.disconnect();
   }, []);
+
+  // ── Wake animation when graph data changes ──
+  useEffect(() => {
+    if (graphData.nodes.length > 0) {
+      animatingRef.current = true;
+      if (idleTimeoutRef.current) clearTimeout(idleTimeoutRef.current);
+      idleTimeoutRef.current = setTimeout(() => { animatingRef.current = false; }, 5000);
+    }
+  }, [graphData]);
 
   // ── Configure gravitational forces (once on mount) ──
   const forcesConfigured = useRef(false);

@@ -201,14 +201,76 @@ class CausalGraph:
     def get_causal_neighborhood(
         self, text: str, radius: int = 2, project: Optional[str] = None,
     ) -> dict[str, Any]:
-        """Get upstream causes + downstream effects + links around a concept."""
+        """Get upstream causes + downstream effects + links around a concept.
+
+        Uses exact text match first. If no results found and vectorstore
+        is available, falls back to semantic similarity search across
+        causal link texts to find approximate matches.
+        """
         upstream = self.get_causes_of(text, max_depth=radius, project=project)
         downstream = self.get_effects_of(text, max_depth=radius, project=project)
+
+        # Semantic fallback: if exact match found nothing, search by embedding
+        if not upstream and not downstream and self._vs:
+            semantic_links = self._semantic_causal_search(text, project=project)
+            if semantic_links:
+                # Re-run with discovered cause/effect texts
+                for link in semantic_links:
+                    upstream.extend(
+                        self.get_causes_of(link.effect_text, max_depth=1, project=project)
+                    )
+                    downstream.extend(
+                        self.get_effects_of(link.cause_text, max_depth=1, project=project)
+                    )
+                # Deduplicate by link id
+                seen_ids: set[Any] = set()
+                unique_upstream = []
+                for link in upstream:
+                    if link.id not in seen_ids:
+                        seen_ids.add(link.id)
+                        unique_upstream.append(link)
+                unique_downstream = []
+                for link in downstream:
+                    if link.id not in seen_ids:
+                        seen_ids.add(link.id)
+                        unique_downstream.append(link)
+                upstream = unique_upstream
+                downstream = unique_downstream
+
         return {
             "concept": text,
             "upstream": [self._link_summary(link) for link in upstream],
             "downstream": [self._link_summary(link) for link in downstream],
         }
+
+    def _semantic_causal_search(
+        self, query: str, project: Optional[str] = None, n_results: int = 5,
+    ) -> list[CausalLink]:
+        """Find causal links whose cause or effect text is semantically similar to query."""
+        if not self._vs:
+            return []
+        # Search episodes that have causal content
+        results = self._vs.search_episodes(query, n_results=n_results * 2)
+        found_links: list[CausalLink] = []
+        seen_ids: set[Any] = set()
+        for r in results:
+            ep_id = r.get("id", "")
+            if not ep_id:
+                continue
+            episode = self._db.get_episode(ep_id)
+            if not episode or not episode.cause or not episode.effect:
+                continue
+            # Find matching causal link
+            links = self._db.list_causal_links(
+                cause_text=episode.cause, effect_text=episode.effect, project=project,
+            )
+            for link in links:
+                if link.id not in seen_ids:
+                    seen_ids.add(link.id)
+                    found_links.append(link)
+                    if len(found_links) >= n_results:
+                        return found_links
+        return found_links
 
     # --- Analysis ---
 

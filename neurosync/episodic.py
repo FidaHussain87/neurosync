@@ -8,6 +8,7 @@ from neurosync.analogy import AnalogyEngine
 from neurosync.db import Database
 from neurosync.models import Episode, Session, Signal, _utcnow
 from neurosync.quality import score_episode_quality
+from neurosync.signals import compute_episode_signals
 from neurosync.vectorstore import VectorStore
 
 
@@ -58,10 +59,35 @@ class EpisodicMemory:
         effect: str = "",
         reasoning: str = "",
         importance: int = 0,
+        contradicts_theory: bool = False,
+        times_explained: int = 0,
+        correction_count: int = 0,
     ) -> Episode:
-        """Record a new episode within a session."""
-        # Importance (1-5 intuition rating) boosts signal weight
-        if importance and importance > 0:
+        """Record a new episode within a session.
+
+        Computes 7 active signal types via compute_episode_signals:
+        CORRECTION (correction_count > 0), DEPTH (layers_touched),
+        SURPRISE (contradicts_theory), REPETITION (times_explained),
+        EXPLICIT (event_type == "explicit"), INTUITION (importance),
+        PASSIVE (saved separately for observed events).
+        DURATION is defined but not yet wired (requires session-level timing).
+        """
+        layers = layers_touched or []
+        # Compute all applicable signals via the signals module
+        signals, composite = compute_episode_signals(
+            event_type=event_type,
+            layers_touched=layers,
+            correction_count=correction_count,
+            contradicts_theory=contradicts_theory,
+            times_explained=times_explained,
+            is_explicit=(event_type == "explicit"),
+            importance=importance,
+        )
+        # Apply composite signal weight (minimum of base weight or composite)
+        if signals:
+            signal_weight = max(signal_weight, composite)
+        elif importance and importance > 0:
+            # Fallback: simple importance boost if no signals computed
             signal_weight *= 1.0 + (importance * 0.5)
         episode = Episode(
             session_id=session_id,
@@ -69,7 +95,7 @@ class EpisodicMemory:
             content=content,
             context=context,
             files_touched=files_touched or [],
-            layers_touched=layers_touched or [],
+            layers_touched=layers,
             signal_weight=signal_weight,
             metadata=metadata or {},
             cause=cause,
@@ -83,6 +109,15 @@ class EpisodicMemory:
         if fp.patterns:
             episode.structural_fingerprint = fp.to_string()
         self._db.save_episode(episode)
+        # Save individual signal records for analysis
+        for sig in signals:
+            signal_record = Signal(
+                episode_id=episode.id,
+                signal_type=sig.signal_type,
+                raw_value=sig.raw_value,
+                multiplier=sig.multiplier,
+            )
+            self._db.save_signal(signal_record)
         # Write fingerprints to junction table
         if episode.structural_fingerprint:
             self._db.set_entity_fingerprints(episode.id, "episode", list(fp.patterns))
@@ -122,22 +157,22 @@ class EpisodicMemory:
         session_id: str,
         content: str,
         event_type: str = "explicit",
+        importance: int = 0,
+        cause: str = "",
+        effect: str = "",
+        reasoning: str = "",
     ) -> Episode:
         """Record an explicit 'remember this' episode with high signal weight."""
-        episode = self.record_episode(
+        return self.record_episode(
             session_id=session_id,
             event_type=event_type,
             content=content,
             signal_weight=10.0,
+            importance=importance,
+            cause=cause,
+            effect=effect,
+            reasoning=reasoning,
         )
-        signal = Signal(
-            episode_id=episode.id,
-            signal_type="EXPLICIT",
-            raw_value=1.0,
-            multiplier=10.0,
-        )
-        self._db.save_signal(signal)
-        return episode
 
     def record_correction(
         self,
@@ -146,23 +181,21 @@ class EpisodicMemory:
         right: str,
         correction_count: int = 1,
     ) -> Episode:
-        """Record a correction episode with exponential weight."""
+        """Record a correction episode with exponential weight.
+
+        Delegates fully to record_episode which handles CORRECTION signal
+        computation via compute_episode_signals. No manual signal creation
+        needed here.
+        """
         weight = min(2**correction_count, 1000.0)
         content = f"CORRECTION: Was told '{wrong}' but correct answer is '{right}'"
-        episode = self.record_episode(
+        return self.record_episode(
             session_id=session_id,
             event_type="correction",
             content=content,
             signal_weight=weight,
+            correction_count=correction_count,
         )
-        signal = Signal(
-            episode_id=episode.id,
-            signal_type="CORRECTION",
-            raw_value=float(correction_count),
-            multiplier=weight,
-        )
-        self._db.save_signal(signal)
-        return episode
 
     def get_episode(self, episode_id: str) -> Optional[Episode]:
         return self._db.get_episode(episode_id)
