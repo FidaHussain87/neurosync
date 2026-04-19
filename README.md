@@ -33,7 +33,7 @@ NeuroSync doesn't just *store* things — it **learns**.
 
 | | Mempalace / existing tools | NeuroSync |
 |---|---|---|
-| **Tool count** | 29 tools | 9 tools |
+| **Tool count** | 29 tools | 10 tools |
 | **Per-prompt cost** | ~$0.25 overhead (hooks on every turn) | Zero — no hooks, no per-turn injection |
 | **Storage strategy** | Stores everything raw (code, HTML, conversations) | Stores structured *events*, extracts *patterns* |
 | **Learning** | None — just a filing cabinet | Clusters episodes, extracts theories, tracks confidence |
@@ -92,9 +92,9 @@ You work with AI  ──>  NeuroSync records what happened (episodes)
 
 ---
 
-## The 9 Tools
+## The 10 Tools
 
-NeuroSync connects to your AI assistant using MCP (a standard protocol). It provides exactly 9 tools — no more, no less:
+NeuroSync connects to your AI assistant using MCP (a standard protocol). It provides 10 tools:
 
 | Tool | What it does | When it's used |
 |---|---|---|
@@ -107,6 +107,7 @@ NeuroSync connects to your AI assistant using MCP (a standard protocol). It prov
 | `neurosync_status` | "How's my memory doing?" | Health check |
 | `neurosync_theories` | "Show me what I've learned" | Browse/manage learned patterns |
 | `neurosync_consolidate` | "Review recent events and extract lessons" | Periodically (like studying) |
+| `neurosync_graph` | "Show me the knowledge graph" | Query/sync Neo4j graph (optional) |
 
 ---
 
@@ -116,6 +117,9 @@ NeuroSync connects to your AI assistant using MCP (a standard protocol). It prov
 
 ```bash
 pip install neurosync
+
+# Optional: install with Neo4j knowledge graph support
+pip install neurosync[neo4j]
 ```
 
 Then connect to Claude Code:
@@ -277,7 +281,7 @@ If you prefer to copy-paste instead of using `generate-protocol`:
 ```markdown
 ## NeuroSync Memory Protocol
 
-NeuroSync gives you persistent memory across sessions via 9 MCP tools. Most behavior is automatic (auto-consolidation, passive git observation). Follow these 3 rules:
+NeuroSync gives you persistent memory across sessions via 10 MCP tools. Most behavior is automatic (auto-consolidation, passive git observation). Follow these 3 rules:
 
 ### Rule 1: Follow recalled theories as ground truth
 
@@ -304,6 +308,7 @@ Call `neurosync_record` with structured episodes when the session ends. Write ca
 | `neurosync_status` | Health check |
 | `neurosync_theories` | Browse/manage learned patterns |
 | `neurosync_consolidate` | Manual consolidation trigger |
+| `neurosync_graph` | Query Neo4j knowledge graph (optional) |
 
 ### What's automatic
 
@@ -459,12 +464,154 @@ Create `~/.neurosync/config.json` for fine-tuning:
 
 ---
 
+## Neo4j Knowledge Graph (Optional)
+
+NeuroSync can sync its memory to a Neo4j graph database, letting you visualize episodes, theories, causal chains, and their connections as an interactive knowledge graph — like neurons connected to ideas, events, and patterns.
+
+**This is entirely optional.** NeuroSync works fully without Neo4j. The graph is a read-only visualization and query layer; SQLite remains the sole source of truth.
+
+### Install the Neo4j driver
+
+```bash
+# If you installed from PyPI:
+pip install neurosync[neo4j]
+
+# If you installed from source:
+pip install -e ".[neo4j]"
+
+# Or install the driver directly:
+pip install neo4j>=5.0
+```
+
+### Start Neo4j locally with Docker
+
+```bash
+docker run -d \
+  --name neo4j \
+  -p 7474:7474 \
+  -p 7687:7687 \
+  -e NEO4J_AUTH=neo4j/neurosync123 \
+  neo4j:5
+```
+
+This starts Neo4j Community Edition with:
+- **Browser UI** at http://localhost:7474 (for visual graph exploration)
+- **Bolt protocol** at bolt://localhost:7687 (for programmatic access)
+- Default credentials: `neo4j` / `neurosync123`
+
+### Configure the connection
+
+Set these environment variables (or add to `~/.neurosync/config.json`):
+
+```bash
+export NEUROSYNC_NEO4J_URI="bolt://localhost:7687"    # default
+export NEUROSYNC_NEO4J_USER="neo4j"                    # default
+export NEUROSYNC_NEO4J_PASSWORD="neurosync123"         # required — no default
+export NEUROSYNC_NEO4J_DATABASE="neo4j"                # default
+```
+
+> **Security note:** The password is only read from environment variables, never from `config.json`. This prevents accidental commits of credentials.
+
+| Setting | Environment variable | Default |
+|---|---|---|
+| URI | `NEUROSYNC_NEO4J_URI` | `bolt://localhost:7687` |
+| User | `NEUROSYNC_NEO4J_USER` | `neo4j` |
+| Password | `NEUROSYNC_NEO4J_PASSWORD` | (none — must be set) |
+| Database | `NEUROSYNC_NEO4J_DATABASE` | `neo4j` |
+
+### Sync your memory to the graph
+
+```bash
+# Sync all data
+neurosync graph-sync
+
+# Sync only one project
+neurosync graph-sync --project myproj
+
+# Check graph health
+neurosync graph-status
+```
+
+Sync is **idempotent** — run it as often as you like. It uses `MERGE` operations so existing nodes are updated, not duplicated. Stale nodes (deleted from SQLite but still in Neo4j) are cleaned up automatically.
+
+### What's in the graph
+
+The sync creates these node types and relationships:
+
+| Node | What it represents |
+|------|-------------------|
+| `Session` | A coding session with project, branch, timestamps |
+| `Episode` | An event within a session (decision, discovery, correction, etc.) |
+| `Theory` | A learned pattern with confidence score |
+| `Concept` | A cause or effect in the causal graph |
+| `StructuralPattern` | A recurring code/architecture pattern |
+| `FailureRecord` | A known anti-pattern or past mistake |
+| `Contradiction` | A theory that was contradicted |
+| `UserKnowledge` | A topic the user has been exposed to |
+
+Key relationships include `CONTAINS` (session→episode), `EXTRACTED_FROM` (theory→episode), `CAUSES` (concept→concept), `PARENT_OF` (theory hierarchy), and more.
+
+### Explore in Neo4j Browser
+
+Open http://localhost:7474 in your browser and run Cypher queries:
+
+```cypher
+-- See everything
+MATCH (n) RETURN n LIMIT 100
+
+-- Active theories and their relationships
+MATCH (t:Theory {active: true})-[r]->(other)
+RETURN t, r, other
+
+-- Causal chains
+MATCH (cause:Concept)-[r:CAUSES]->(effect:Concept)
+RETURN cause.text, r.mechanism, effect.text, r.strength
+ORDER BY r.strength DESC
+
+-- How episodes became theories
+MATCH (e:Episode)<-[:EXTRACTED_FROM]-(t:Theory)
+RETURN t.content, collect(e.content) AS source_episodes
+```
+
+### Use via MCP tool
+
+The `neurosync_graph` tool lets your AI assistant query the graph directly:
+
+```
+# Check graph status
+neurosync_graph action=status
+
+# List pre-built queries
+neurosync_graph action=prebuilt
+
+# Run a pre-built query
+neurosync_graph action=prebuilt prebuilt_name=causal_chains
+
+# Run a custom Cypher query (read-only)
+neurosync_graph action=query cypher="MATCH (t:Theory) RETURN t.content, t.confidence ORDER BY t.confidence DESC LIMIT 5"
+
+# Sync from within a session
+neurosync_graph action=sync
+```
+
+> **Safety:** The MCP tool only allows read-only Cypher queries. Write operations (`CREATE`, `DELETE`, `SET`, `MERGE`, `DROP`, etc.) are blocked.
+
+### Graceful degradation
+
+If the Neo4j driver isn't installed or the server isn't running:
+- All other NeuroSync features continue to work normally
+- The `neurosync_graph` MCP tool returns a friendly "Neo4j not available" message
+- The `graph-sync` and `graph-status` CLI commands print an error and exit
+- `neurosync status` shows `"graph": {"healthy": false, "error": "..."}` in its output
+
+---
+
 ## Project Structure
 
 ```
 neurosync/
 ├── neurosync/                  # The main Python package
-│   ├── mcp_server.py           # The MCP server (talks JSON-RPC over stdio)
+│   ├── mcp_server.py           # The MCP server (talks JSON-RPC over stdio, 10 tools)
 │   ├── cli.py                  # Command-line interface
 │   ├── config.py               # Settings management
 │   ├── models.py               # Data structures (Session, Episode, Theory, etc.)
@@ -482,8 +629,9 @@ neurosync/
 │   ├── user_model.py           # Tracks what you already know
 │   ├── retrieval.py            # Full recall pipeline
 │   ├── starter_pack_loader.py  # Loads YAML starter packs
+│   ├── graph.py                # Optional Neo4j knowledge graph sync & querying
 │   └── starter_packs/          # Built-in theory packs (YAML files)
-├── tests/                      # Test suite (~277 tests, 89%+ coverage)
+├── tests/                      # Test suite (~368 tests, 88%+ coverage)
 ├── docs/                       # Detailed documentation
 ├── pyproject.toml              # Package config
 └── Dockerfile                  # Container support
@@ -498,9 +646,10 @@ neurosync/
 | Language | Python 3.9+ | Widely available, good ecosystem |
 | Structured storage | SQLite (WAL mode) | Zero setup, fast, thread-safe |
 | Semantic search | ChromaDB | Local vector DB, cosine similarity |
+| Knowledge graph | Neo4j (optional) | Visualize memory as a connected graph |
 | Transport | MCP JSON-RPC 2.0 over stdio | Standard protocol for AI tool integration |
 | Build | hatchling | Modern Python packaging |
-| Testing | pytest + pytest-cov | ~277 tests, 89%+ coverage |
+| Testing | pytest + pytest-cov | ~368 tests, 88%+ coverage |
 | Linting | ruff | Fast, comprehensive |
 
 ---
@@ -518,6 +667,9 @@ neurosync generate-protocol              # Output minimal protocol for CLAUDE.md
 neurosync generate-protocol --project X  # Generate full CLAUDE.md for project X
 neurosync install-hook                   # Install auto-recall hook for Claude Code
 neurosync install-hook --dry-run         # Preview hook installation
+neurosync graph-sync                     # Sync SQLite data to Neo4j knowledge graph
+neurosync graph-sync --project myproj    # Sync only one project
+neurosync graph-status                   # Show Neo4j graph health and stats
 neurosync reset --confirm                # Delete ALL memory data (careful!)
 ```
 
@@ -531,6 +683,9 @@ neurosync reset --confirm                # Delete ALL memory data (careful!)
 git clone <repo>
 cd neurosync
 pip install -e ".[dev]"
+
+# Optional: install with Neo4j support
+pip install -e ".[dev,neo4j]"
 ```
 
 ### Run tests
@@ -575,6 +730,9 @@ A: Use `neurosync_correct` to flag mistakes (they get exponentially weighted), o
 
 **Q: How much disk space does it use?**
 A: Very little. SQLite is compact, and ChromaDB embeddings are small. Even after months of heavy use, expect under 100MB.
+
+**Q: Do I need Neo4j?**
+A: No. Neo4j is completely optional — it's a visualization and query layer. NeuroSync works fully with just SQLite and ChromaDB. Install `neurosync[neo4j]` and run a local Neo4j instance only if you want to explore your memory as an interactive graph.
 
 **Q: Can I use this with AI tools other than Claude Code?**
 A: Yes — anything that supports MCP (Model Context Protocol). Add the server config to your tool's MCP settings.

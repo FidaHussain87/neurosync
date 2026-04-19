@@ -40,6 +40,17 @@ def cmd_status(args: argparse.Namespace) -> None:
     except Exception as e:
         status["vectorstore"] = {"healthy": False, "error": str(e)}
 
+    try:
+        from neurosync.graph import GraphStore
+        gs = GraphStore(config)
+        status["graph"] = gs.stats()
+        status["graph"]["healthy"] = True
+        gs.close()
+    except ImportError:
+        status["graph"] = {"healthy": False, "error": "neo4j package not installed"}
+    except Exception as e:
+        status["graph"] = {"healthy": False, "error": str(e)}
+
     print(json.dumps(status, indent=2))
 
 
@@ -111,6 +122,49 @@ def cmd_reset(args: argparse.Namespace) -> None:
         )
 
     print("NeuroSync data reset.")
+
+
+def cmd_graph_sync(args: argparse.Namespace) -> None:
+    """Sync SQLite data to Neo4j knowledge graph."""
+    from neurosync.config import NeuroSyncConfig
+    from neurosync.db import Database
+
+    config = NeuroSyncConfig.load()
+    db = Database(config)
+    try:
+        from neurosync.graph import GraphStore
+        gs = GraphStore(config)
+        try:
+            result = gs.sync(db, project=args.project)
+            print(json.dumps(result, indent=2))
+        finally:
+            gs.close()
+    except ImportError:
+        print(json.dumps({"error": "Neo4j driver not installed. Run: pip install neurosync[neo4j]"}))
+        sys.exit(1)
+    except Exception as e:
+        print(json.dumps({"error": f"Cannot connect to Neo4j: {e}"}))
+        sys.exit(1)
+    finally:
+        db.close()
+
+
+def cmd_graph_status(args: argparse.Namespace) -> None:
+    """Show Neo4j graph health and statistics."""
+    from neurosync.config import NeuroSyncConfig
+
+    config = NeuroSyncConfig.load()
+    try:
+        from neurosync.graph import GraphStore
+        gs = GraphStore(config)
+        stats = gs.stats()
+        stats["healthy"] = True
+        print(json.dumps(stats, indent=2))
+        gs.close()
+    except ImportError:
+        print(json.dumps({"healthy": False, "error": "neo4j package not installed"}))
+    except Exception as e:
+        print(json.dumps({"healthy": False, "error": str(e)}))
 
 
 def cmd_generate_protocol(args: argparse.Namespace) -> None:
@@ -190,6 +244,13 @@ def main() -> None:
     p_hook.add_argument("--project-dir", default=None, help="Project directory (default: cwd)")
     p_hook.add_argument("--dry-run", action="store_true", help="Preview only")
 
+    # graph-sync
+    p_graph_sync = subparsers.add_parser("graph-sync", help="Sync SQLite data to Neo4j")
+    p_graph_sync.add_argument("--project", default=None, help="Limit sync to project")
+
+    # graph-status
+    subparsers.add_parser("graph-status", help="Show Neo4j graph health")
+
     # reset
     p_reset = subparsers.add_parser("reset", help="Reset all NeuroSync data")
     p_reset.add_argument("--confirm", action="store_true", help="Confirm reset")
@@ -203,6 +264,8 @@ def main() -> None:
         "import-starter-pack": cmd_import_starter_pack,
         "generate-protocol": cmd_generate_protocol,
         "install-hook": cmd_install_hook,
+        "graph-sync": cmd_graph_sync,
+        "graph-status": cmd_graph_status,
         "reset": cmd_reset,
     }
 

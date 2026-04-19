@@ -45,8 +45,9 @@ class TestMcpProtocol:
         assert "neurosync_status" in names
         assert "neurosync_theories" in names
         assert "neurosync_consolidate" in names
-        assert len(tools) == 9
+        assert len(tools) == 10
         assert "neurosync_handoff" in names
+        assert "neurosync_graph" in names
 
     def test_ping(self):
         req = {"jsonrpc": "2.0", "id": 3, "method": "ping", "params": {}}

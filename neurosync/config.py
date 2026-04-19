@@ -34,6 +34,19 @@ class NeuroSyncConfig:
     protocol_hints_enabled: bool = True
     auto_consolidation_enabled: bool = True
     auto_consolidation_threshold: int = 20
+    neo4j_uri: str = ""
+    neo4j_user: str = ""
+    neo4j_password: str = ""
+    neo4j_database: str = ""
+
+    def __repr__(self) -> str:
+        fields = []
+        for f in self.__dataclass_fields__:
+            val = getattr(self, f)
+            if f == "neo4j_password" and val:
+                val = "***"
+            fields.append(f"{f}={val!r}")
+        return f"{self.__class__.__name__}({', '.join(fields)})"
 
     def __post_init__(self) -> None:
         if not self.data_dir:
@@ -42,6 +55,14 @@ class NeuroSyncConfig:
             self.sqlite_path = os.path.join(self.data_dir, "neurosync.sqlite3")
         if not self.chroma_path:
             self.chroma_path = os.path.join(self.data_dir, "chroma")
+        if not self.neo4j_uri:
+            self.neo4j_uri = os.environ.get("NEUROSYNC_NEO4J_URI", "bolt://localhost:7687")
+        if not self.neo4j_user:
+            self.neo4j_user = os.environ.get("NEUROSYNC_NEO4J_USER", "neo4j")
+        if not self.neo4j_password:
+            self.neo4j_password = os.environ.get("NEUROSYNC_NEO4J_PASSWORD", "")
+        if not self.neo4j_database:
+            self.neo4j_database = os.environ.get("NEUROSYNC_NEO4J_DATABASE", "neo4j")
 
     @classmethod
     def load(cls, config_path: Optional[str] = None) -> NeuroSyncConfig:
@@ -65,6 +86,10 @@ class NeuroSyncConfig:
             if val:
                 field_name = env_key.replace("NEUROSYNC_", "").lower()
                 overrides[field_name] = val
+        # Never load neo4j_password from config.json — it must only come from
+        # the NEUROSYNC_NEO4J_PASSWORD environment variable (handled in __post_init__)
+        # to avoid storing secrets in plaintext on disk.
+        overrides.pop("neo4j_password", None)
         return cls(**{k: v for k, v in overrides.items() if k in cls.__dataclass_fields__})
 
     def ensure_dirs(self) -> None:

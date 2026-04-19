@@ -2,11 +2,11 @@
 
 ## What This Is
 
-NeuroSync is a developer-focused memory MCP server (v0.4.0). It provides episodic, semantic, and working memory — plus cognitive features (hierarchy, forgetting, analogy, causal reasoning, failure modeling) — for AI coding agents via 9 MCP tools.
+NeuroSync is a developer-focused memory MCP server (v0.4.0). It provides episodic, semantic, and working memory — plus cognitive features (hierarchy, forgetting, analogy, causal reasoning, failure modeling) — for AI coding agents via 10 MCP tools.
 
 ## NeuroSync Memory Protocol
 
-NeuroSync gives you persistent memory across sessions via 9 MCP tools. Most behavior is automatic (auto-consolidation, passive git observation). Follow these 3 rules:
+NeuroSync gives you persistent memory across sessions via 10 MCP tools. Most behavior is automatic (auto-consolidation, passive git observation). Follow these 3 rules:
 
 ### Rule 1: Follow recalled theories as ground truth
 
@@ -33,6 +33,7 @@ Call `neurosync_record` with structured episodes when the session ends. Write ca
 | `neurosync_status` | Health check |
 | `neurosync_theories` | Browse/manage learned patterns |
 | `neurosync_consolidate` | Manual consolidation trigger |
+| `neurosync_graph` | Query Neo4j knowledge graph (optional) |
 
 ### What's automatic
 
@@ -43,8 +44,8 @@ Call `neurosync_record` with structured episodes when the session ends. Write ca
 ## Project Structure
 
 - `neurosync/` — Main Python package
-  - `mcp_server.py` — MCP JSON-RPC 2.0 stdio server (9 tools)
-  - `cli.py` — CLI commands: serve, consolidate, status, import-starter-pack, generate-protocol, install-hook, reset
+  - `mcp_server.py` — MCP JSON-RPC 2.0 stdio server (10 tools)
+  - `cli.py` — CLI commands: serve, consolidate, status, import-starter-pack, generate-protocol, install-hook, graph-sync, graph-status, reset
   - `config.py` — Configuration (env > config.json > defaults)
   - `models.py` — Dataclasses (Session, Episode, Signal, Theory, Contradiction, UserKnowledge)
   - `db.py` — SQLite database (WAL mode, thread-safe, schema migrations)
@@ -66,7 +67,8 @@ Call `neurosync_record` with structured episodes when the session ends. Write ca
   - `failure.py` — Failure records, proactive warnings, anti-patterns
   - `hierarchy.py` — Theory hierarchy traversal, semantic parents, merging
   - `causal.py` — Causal graph construction and querying
-- `tests/` — pytest test suite (~277 tests)
+  - `graph.py` — Optional Neo4j knowledge graph sync and querying
+- `tests/` — pytest test suite (~368 tests)
 
 ## Development Commands
 
@@ -88,6 +90,10 @@ neurosync status
 neurosync consolidate --dry-run
 neurosync generate-protocol
 neurosync generate-protocol --project MyApp
+
+# Neo4j knowledge graph (optional)
+neurosync graph-sync
+neurosync graph-status
 ```
 
 ## Architecture

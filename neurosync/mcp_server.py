@@ -1,4 +1,4 @@
-"""MCP JSON-RPC 2.0 stdio server — 9 tools for NeuroSync memory system."""
+"""MCP JSON-RPC 2.0 stdio server — 10 tools for NeuroSync memory system."""
 
 from __future__ import annotations
 
@@ -285,6 +285,42 @@ TOOLS = [
             "required": ["goal", "accomplished", "remaining", "next_step"],
         },
     },
+    {
+        "name": "neurosync_graph",
+        "description": (
+            "Query or sync the Neo4j knowledge graph. Requires neo4j extra: "
+            "pip install neurosync[neo4j]. Actions: status (graph health), "
+            "sync (SQLite -> Neo4j), prebuilt (list/run pre-built queries), "
+            "query (run read-only Cypher)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["query", "sync", "prebuilt", "status"],
+                    "description": "Action to perform",
+                },
+                "cypher": {
+                    "type": "string",
+                    "description": "Cypher query to execute (for 'query' action)",
+                },
+                "parameters": {
+                    "type": "object",
+                    "description": "Parameters for the Cypher query",
+                },
+                "prebuilt_name": {
+                    "type": "string",
+                    "description": "Name of a pre-built query to run (for 'prebuilt' action)",
+                },
+                "project": {
+                    "type": "string",
+                    "description": "Project filter for sync",
+                },
+            },
+            "required": ["action"],
+        },
+    },
 ]
 
 # ---------------------------------------------------------------------------
@@ -309,6 +345,7 @@ _causal: Optional[CausalGraph] = None
 _failure: Optional[FailureModel] = None
 _forgetting: Optional[ForgettingEngine] = None
 _hierarchy: Optional[TheoryHierarchy] = None
+_graph: Optional[Any] = None
 _current_session_id: Optional[str] = None
 _correction_count: int = 0
 _git_observer: Optional[GitObserver] = None
@@ -373,6 +410,27 @@ def _ensure_session(project: str = "", branch: str = "") -> str:
         _git_observer = GitObserver()
         _git_observer.capture_baseline()
     return session.id
+
+
+def _get_graph():
+    """Lazy-init GraphStore on first use."""
+    global _graph
+    if _graph is False:  # Previously failed — don't retry
+        return None
+    if _graph is not None:
+        return _graph
+    try:
+        from neurosync.graph import GraphStore
+        _graph = GraphStore(_config)
+        return _graph
+    except ImportError:
+        logger.info("Neo4j driver not installed, graph features disabled")
+        _graph = False  # sentinel: don't retry
+        return None
+    except Exception:
+        logger.warning("Neo4j unavailable, graph features disabled", exc_info=True)
+        _graph = False
+        return None
 
 
 def _try_auto_consolidate() -> Optional[dict]:
@@ -589,10 +647,11 @@ def handle_correct(params: dict[str, Any]) -> dict[str, Any]:
 
 
 def handle_status(params: dict[str, Any]) -> dict[str, Any]:
-    _require_init(_db, _vs)
+    # Only require _db — vectorstore and graph are optional (degraded mode)
+    _require_init(_db)
     db_stats = _db.stats()
-    vs_stats = _vs.stats()
-    return {
+    vs_stats = _vs.stats() if _vs else {"healthy": False, "error": "ChromaDB unavailable"}
+    result: dict[str, Any] = {
         "version": __version__,
         "database": db_stats,
         "vectorstore": vs_stats,
@@ -601,6 +660,14 @@ def handle_status(params: dict[str, Any]) -> dict[str, Any]:
         "causal_links": _db.count_causal_links(),
         "failure_records": _db.count_failure_records(),
     }
+    graph = _get_graph()
+    if graph:
+        try:
+            result["graph"] = graph.stats()
+            result["graph"]["healthy"] = True
+        except Exception as e:
+            result["graph"] = {"healthy": False, "error": str(e)}
+    return result
 
 
 def handle_theories(params: dict[str, Any]) -> dict[str, Any]:
@@ -741,6 +808,73 @@ def handle_handoff(params: dict[str, Any]) -> dict[str, Any]:
     })
 
 
+def handle_graph(params: dict[str, Any]) -> dict[str, Any]:
+    _require_init(_config)
+    action = params.get("action", "status")
+    graph = _get_graph()
+
+    if not graph:
+        return {
+            "error": "Neo4j graph not available. Install with: pip install neurosync[neo4j] "
+            "and ensure Neo4j is running.",
+        }
+
+    if action == "status":
+        try:
+            stats = graph.stats()
+            stats["healthy"] = True
+            return stats
+        except Exception as e:
+            return {"healthy": False, "error": str(e)}
+
+    elif action == "prebuilt":
+        prebuilt_name = params.get("prebuilt_name")
+        if not prebuilt_name:
+            # Return catalog
+            catalog = graph.get_prebuilt_queries()
+            return {
+                "queries": {
+                    name: info["description"] for name, info in catalog.items()
+                },
+            }
+        catalog = graph.get_prebuilt_queries()
+        if prebuilt_name not in catalog:
+            return {"error": f"Unknown pre-built query: {prebuilt_name}"}
+        query_info = catalog[prebuilt_name]
+        cypher = query_info["cypher"]
+        query_params = params.get("parameters", {})
+        results = graph.run_cypher(cypher, query_params)
+        return {
+            "query": prebuilt_name,
+            "description": query_info["description"],
+            "results": results,
+        }
+
+    elif action == "sync":
+        _require_init(_db)
+        project = params.get("project")
+        result = graph.sync(_db, project=project)
+        return result
+
+    elif action == "query":
+        cypher = params.get("cypher", "")
+        if not cypher.strip():
+            return {"error": "cypher parameter is required for query action"}
+        from neurosync.graph import _is_write_query
+
+        if _is_write_query(cypher):
+            return {
+                "error": "Write queries are not allowed via the MCP tool. "
+                "Use sync action or Neo4j Browser for writes."
+            }
+        query_params = params.get("parameters", {})
+        results = graph.run_cypher(cypher, query_params)
+        return {"results": results}
+
+    else:
+        return {"error": f"Unknown action: {action}. Use: query, sync, prebuilt, status"}
+
+
 _HANDLERS = {
     "neurosync_recall": handle_recall,
     "neurosync_record": handle_record,
@@ -751,6 +885,7 @@ _HANDLERS = {
     "neurosync_theories": handle_theories,
     "neurosync_consolidate": handle_consolidate,
     "neurosync_handoff": handle_handoff,
+    "neurosync_graph": handle_graph,
 }
 
 

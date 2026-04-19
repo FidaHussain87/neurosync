@@ -1280,6 +1280,32 @@ class Database:
             ).fetchall()
         return [{"entity_id": r["entity_id"], "entity_type": r["entity_type"]} for r in rows]
 
+    # --- Bulk-read helpers for graph sync ---
+
+    def list_all_entity_fingerprints(self) -> list[dict[str, str]]:
+        """Return all rows from entity_fingerprints as dicts."""
+        conn = self._get_conn()
+        rows = conn.execute("SELECT entity_id, entity_type, pattern FROM entity_fingerprints").fetchall()
+        return [{"entity_id": r["entity_id"], "entity_type": r["entity_type"], "pattern": r["pattern"]} for r in rows]
+
+    def list_all_theory_episodes(self) -> list[dict[str, str]]:
+        """Return all rows from theory_episodes as dicts."""
+        conn = self._get_conn()
+        rows = conn.execute("SELECT theory_id, episode_id FROM theory_episodes").fetchall()
+        return [{"theory_id": r["theory_id"], "episode_id": r["episode_id"]} for r in rows]
+
+    def list_all_theory_relations(self) -> list[dict[str, str]]:
+        """Return all rows from theory_relations as dicts."""
+        conn = self._get_conn()
+        rows = conn.execute("SELECT theory_id, related_theory_id FROM theory_relations").fetchall()
+        return [{"theory_id": r["theory_id"], "related_theory_id": r["related_theory_id"]} for r in rows]
+
+    def list_all_causal_link_episodes(self) -> list[dict[str, Any]]:
+        """Return all rows from causal_link_episodes as dicts."""
+        conn = self._get_conn()
+        rows = conn.execute("SELECT causal_link_id, episode_id FROM causal_link_episodes").fetchall()
+        return [{"causal_link_id": r["causal_link_id"], "episode_id": r["episode_id"]} for r in rows]
+
     @staticmethod
     def _normalize_text(text: str) -> str:
         """Normalize text for case/whitespace-insensitive comparison."""

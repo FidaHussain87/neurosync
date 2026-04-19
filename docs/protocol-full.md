@@ -8,7 +8,7 @@
 
 ## NeuroSync Memory Protocol
 
-NeuroSync gives you persistent memory across sessions via 9 MCP tools. It uses a three-layer architecture: **episodic** (raw session events in SQLite + ChromaDB), **semantic** (consolidated theories with confidence scores), **working** (context-aware recall via winner-take-all activation). Most behavior is automatic. Follow these 7 rules:
+NeuroSync gives you persistent memory across sessions via 10 MCP tools. It uses a three-layer architecture: **episodic** (raw session events in SQLite + ChromaDB), **semantic** (consolidated theories with confidence scores), **working** (context-aware recall via winner-take-all activation). Most behavior is automatic. Follow these 7 rules:
 
 ### Rule 1: Recall at session start
 
@@ -103,6 +103,7 @@ Available actions:
 | `neurosync_theories` | Browse/manage learned patterns | Before design decisions (Rule 7) |
 | `neurosync_status` | Health check | On request or to diagnose issues |
 | `neurosync_consolidate` | Manual consolidation trigger | Rarely needed; auto-consolidation handles this |
+| `neurosync_graph` | Query Neo4j knowledge graph | Visualize/query memory as a graph (optional) |
 
 ### Signal weighting system
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 MINIMAL_PROTOCOL = """\
 ## NeuroSync Memory Protocol
 
-NeuroSync gives you persistent memory across sessions via 9 MCP tools. \
+NeuroSync gives you persistent memory across sessions via 10 MCP tools. \
 Most behavior is automatic (auto-consolidation, passive git observation). \
 Follow these 3 rules:
 
@@ -39,6 +39,7 @@ multi-session tasks.
 | `neurosync_status` | Health check |
 | `neurosync_theories` | Browse/manage learned patterns |
 | `neurosync_consolidate` | Manual consolidation trigger |
+| `neurosync_graph` | Query Neo4j knowledge graph (optional) |
 
 ### What's automatic
 
