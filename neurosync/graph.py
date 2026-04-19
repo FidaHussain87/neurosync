@@ -150,7 +150,7 @@ PREBUILT_QUERIES: dict[str, dict[str, str]] = {
     "knowledge_graph_overview": {
         "description": "Node and relationship counts by type",
         "cypher": (
-            "CALL { MATCH (n) RETURN labels(n)[0] AS label, count(n) AS count } "
+            "CALL () { MATCH (n) RETURN labels(n)[0] AS label, count(n) AS count } "
             "RETURN label, count ORDER BY count DESC"
         ),
     },
@@ -831,11 +831,11 @@ class GraphStore:
     def stats(self) -> dict[str, Any]:
         """Return node and relationship counts by type."""
         node_counts = self.run_cypher(
-            "CALL { MATCH (n) RETURN labels(n)[0] AS label, count(n) AS count } "
+            "CALL () { MATCH (n) RETURN labels(n)[0] AS label, count(n) AS count } "
             "RETURN label, count ORDER BY count DESC"
         )
         rel_counts = self.run_cypher(
-            "CALL { MATCH ()-[r]->() RETURN type(r) AS type, count(r) AS count } "
+            "CALL () { MATCH ()-[r]->() RETURN type(r) AS type, count(r) AS count } "
             "RETURN type, count ORDER BY count DESC"
         )
         return {
@@ -847,6 +847,6 @@ class GraphStore:
         """Delete all nodes and relationships from the graph."""
         with self._driver.session(database=self._database) as session:
             session.run(
-                "CALL { MATCH (n) DETACH DELETE n } IN TRANSACTIONS OF 10000 ROWS"
+                "CALL () { MATCH (n) DETACH DELETE n } IN TRANSACTIONS OF 10000 ROWS"
             )
         return {"message": "Graph cleared"}

@@ -344,7 +344,7 @@ class TestGraphStoreReset:
 
         assert result["message"] == "Graph cleared"
         session.run.assert_called_with(
-            "CALL { MATCH (n) DETACH DELETE n } IN TRANSACTIONS OF 10000 ROWS"
+            "CALL () { MATCH (n) DETACH DELETE n } IN TRANSACTIONS OF 10000 ROWS"
         )
         gs.close()
 
