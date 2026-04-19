@@ -57,6 +57,9 @@ export default function App() {
         onToggleType={graph.toggleType}
         searchQuery={graph.searchQuery}
         onSearchChange={graph.setSearchQuery}
+        projects={graph.projects}
+        projectFilter={graph.projectFilter}
+        onProjectChange={graph.setProjectFilter}
         onRunPrebuilt={graph.runPrebuilt}
         onRunCustom={graph.runCustomQuery}
         onLoadOverview={graph.loadOverview}

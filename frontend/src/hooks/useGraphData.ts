@@ -91,6 +91,7 @@ export function useGraphData() {
     new Set(['Session', 'Episode', 'Theory', 'Concept', 'StructuralPattern', 'FailureRecord', 'Contradiction', 'UserKnowledge']),
   );
   const [searchQuery, setSearchQuery] = useState('');
+  const [projectFilter, setProjectFilter] = useState('');
   const fullDataRef = useRef<GraphData>({ nodes: [], links: [] });
   // Counter that increments on full data replacement (overview, prebuilt, custom) — NOT on expand
   const [viewResetCount, setViewResetCount] = useState(0);
@@ -163,11 +164,44 @@ export function useGraphData() {
     }
   }, [updateData]);
 
+  // Extract unique project names from Session nodes
+  const projects = useMemo((): string[] => {
+    const projectSet = new Set<string>();
+    for (const n of graphData.nodes) {
+      const p = (n.properties.project as string) ?? '';
+      if (p) projectSet.add(p);
+    }
+    return Array.from(projectSet).sort();
+  }, [graphData.nodes]);
+
   const filteredData = useMemo((): GraphData => {
     let nodes = graphData.nodes;
 
     // Filter by visible types
     nodes = nodes.filter(n => visibleTypes.has(n.label));
+
+    // Filter by project (Session nodes carry project; other nodes included if linked)
+    if (projectFilter) {
+      const projectSessionIds = new Set(
+        graphData.nodes
+          .filter(n => n.label === 'Session' && n.properties.project === projectFilter)
+          .map(n => n.id),
+      );
+      // Keep nodes that are: in the project, or linked to a session in the project
+      const linkedIds = new Set<string>();
+      for (const l of graphData.links) {
+        const src = typeof l.source === 'object' ? (l.source as GraphNode).id : l.source;
+        const tgt = typeof l.target === 'object' ? (l.target as GraphNode).id : l.target;
+        if (projectSessionIds.has(src)) linkedIds.add(tgt);
+        if (projectSessionIds.has(tgt)) linkedIds.add(src);
+      }
+      nodes = nodes.filter(n =>
+        projectSessionIds.has(n.id) ||
+        linkedIds.has(n.id) ||
+        (n.properties.project as string) === projectFilter ||
+        (n.properties.scope_qualifier as string) === projectFilter,
+      );
+    }
 
     // Filter by search query
     if (searchQuery) {
@@ -183,7 +217,7 @@ export function useGraphData() {
     });
 
     return { nodes, links };
-  }, [graphData, visibleTypes, searchQuery]);
+  }, [graphData, visibleTypes, searchQuery, projectFilter]);
 
   const toggleType = useCallback((type: NodeType) => {
     setVisibleTypes(prev => {
@@ -202,6 +236,9 @@ export function useGraphData() {
     visibleTypes,
     searchQuery,
     setSearchQuery,
+    projects,
+    projectFilter,
+    setProjectFilter,
     toggleType,
     loadOverview,
     expandNode,

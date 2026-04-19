@@ -66,6 +66,8 @@ Environment variables:
 - `NEUROSYNC_DATA_DIR` — Data directory (default: `~/.neurosync`)
 - `NEUROSYNC_DEFAULT_PROJECT` — Default project name
 - `NEUROSYNC_DEFAULT_BRANCH` — Default branch name
+- `NEUROSYNC_DB_BACKEND` — Database backend: `sqlite` (default) or `postgresql`
+- `NEUROSYNC_PG_DSN` — PostgreSQL connection string (when using postgresql backend)
 
 Config file (`~/.neurosync/config.json`):
 ```json
@@ -78,6 +80,24 @@ Config file (`~/.neurosync/config.json`):
   "max_signal_weight": 1000.0
 }
 ```
+
+## PostgreSQL Backend (Optional)
+
+By default, NeuroSync uses SQLite. To switch to PostgreSQL:
+
+```bash
+# Install the PostgreSQL driver
+pip install neurosync[postgresql]
+
+# Start PostgreSQL (if not running)
+docker run -d --name neurosync-pg -p 5432:5432 -e POSTGRES_DB=neurosync -e POSTGRES_PASSWORD=neurosync postgres:16
+
+# Configure NeuroSync to use PostgreSQL
+export NEUROSYNC_DB_BACKEND="postgresql"
+export NEUROSYNC_PG_DSN="postgresql://postgres:neurosync@localhost:5432/neurosync"
+```
+
+NeuroSync automatically creates all tables on first connection. If PostgreSQL is unreachable, it falls back to SQLite.
 
 ## Neo4j Knowledge Graph (Optional)
 
