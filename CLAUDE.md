@@ -69,6 +69,12 @@ Call `neurosync_record` with structured episodes when the session ends. Write ca
   - `causal.py` — Causal graph construction and querying
   - `graph.py` — Optional Neo4j knowledge graph sync and querying
 - `tests/` — pytest test suite (~368 tests)
+- `frontend/` — Interactive graph visualization (React 18 + TypeScript)
+  - `src/components/` — GraphCanvas, Sidebar, DetailPanel, QueryRunner, ConnectionForm
+  - `src/hooks/` — useNeo4jConnection, useGraphData
+  - `src/services/neo4j.ts` — Neo4j driver wrapper, query extraction, record-to-graph transformation
+  - `src/types.ts` — GraphNode, GraphLink, GraphData interfaces
+  - `src/constants.ts` — Node/link styles, 12 pre-built Cypher queries
 
 ## Development Commands
 
@@ -94,6 +100,10 @@ neurosync generate-protocol --project MyApp
 # Neo4j knowledge graph (optional)
 neurosync graph-sync
 neurosync graph-status
+
+# Frontend visualization (optional, requires Neo4j)
+cd frontend && npm install && npm run dev   # dev server at localhost:5173
+cd frontend && npm run build                # production build to frontend/dist/
 ```
 
 ## Architecture
@@ -103,7 +113,7 @@ Three-layer memory system:
 2. **Semantic** (Layer 2) — Consolidated theories with confidence scores
 3. **Working** (Layer 3) — Context-aware recall with winner-take-all activation
 
-Data flows: record -> episodes -> auto-consolidation -> theories -> recall
+Data flows: record -> episodes -> auto-consolidation -> theories -> recall -> graph-sync -> Neo4j -> frontend visualization
 
 ### Degraded Mode
 

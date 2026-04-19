@@ -14,7 +14,7 @@ from neurosync.config import NeuroSyncConfig
 logger = logging.getLogger("neurosync.graph")
 
 try:
-    from neo4j import GraphDatabase  # type: ignore[import-untyped]
+    from neo4j import GraphDatabase, basic_auth  # type: ignore[import-untyped]
 
     HAS_NEO4J = True
 except ImportError:
@@ -200,7 +200,7 @@ class GraphStore:
             raise ImportError(
                 "Neo4j driver not installed. Install with: pip install neurosync[neo4j]"
             )
-        auth = (config.neo4j_user, config.neo4j_password) if config.neo4j_password else None
+        auth = basic_auth(config.neo4j_user, config.neo4j_password) if config.neo4j_password else None
         self._driver = GraphDatabase.driver(config.neo4j_uri, auth=auth)
         self._database = config.neo4j_database or None
         # Verify connectivity

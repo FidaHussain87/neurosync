@@ -596,6 +596,50 @@ neurosync_graph action=sync
 
 > **Safety:** The MCP tool only allows read-only Cypher queries. Write operations (`CREATE`, `DELETE`, `SET`, `MERGE`, `DROP`, etc.) are blocked.
 
+### Interactive Frontend Visualization
+
+NeuroSync includes a standalone web frontend that connects directly to your Neo4j instance and renders the knowledge graph as an interactive cosmological visualization — zoom out to see clusters like nebulae, zoom in to explore individual nodes like stars and planets.
+
+#### Quick start
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Open http://localhost:5173, enter your Neo4j credentials, and click **Load Overview**.
+
+#### Tech stack
+
+| Component | Technology |
+|-----------|-----------|
+| UI | React 18 + TypeScript |
+| Build | Vite 5.x |
+| Graph rendering | react-force-graph-2d (canvas-based) |
+| Community detection | graphology + Louvain algorithm |
+| Neo4j connection | neo4j-driver 5.x (direct Bolt WebSocket) |
+| Styling | Tailwind CSS 3.4 (dark theme) |
+
+#### Features
+
+- **Multi-layer parallax star field** — screen-space stars with depth layers, color temperature variation, twinkling, and diffraction spikes
+- **Space-time fabric** — gravitational curvature lines near massive nodes (Theory, Session, Concept)
+- **Mass-weighted physics** — node types have different gravitational mass affecting force simulation
+- **Cluster view** — zoom out below 3x to see Louvain-detected communities as nebula clusters
+- **Progressive loading** — overview on connect, expand neighbors on click, full replace on query
+- **12 pre-built Cypher queries** — theory network, causal chains, failure hotspots, contradiction analysis, and more
+- **Custom Cypher** — run any read-only Cypher query and visualize the result
+- **Detail panel** — click any node to see its properties, confidence bars, connections, and navigate to related nodes
+
+#### Production build
+
+```bash
+cd frontend
+npm run build    # outputs to frontend/dist/
+npm run preview  # preview the production build
+```
+
 ### Graceful degradation
 
 If the Neo4j driver isn't installed or the server isn't running:
@@ -632,6 +676,15 @@ neurosync/
 │   ├── graph.py                # Optional Neo4j knowledge graph sync & querying
 │   └── starter_packs/          # Built-in theory packs (YAML files)
 ├── tests/                      # Test suite (~368 tests, 88%+ coverage)
+├── frontend/                   # Interactive graph visualization (React + TypeScript)
+│   ├── src/
+│   │   ├── components/         # GraphCanvas, Sidebar, DetailPanel, QueryRunner, ConnectionForm
+│   │   ├── hooks/              # useNeo4jConnection, useGraphData
+│   │   ├── services/           # Neo4j driver wrapper and query extraction
+│   │   ├── types.ts            # GraphNode, GraphLink, GraphData interfaces
+│   │   └── constants.ts        # Node/link styles, 12 pre-built Cypher queries
+│   ├── package.json            # React 18, react-force-graph-2d, neo4j-driver, Tailwind
+│   └── vite.config.ts          # Vite 5.x with chunk splitting
 ├── docs/                       # Detailed documentation
 ├── pyproject.toml              # Package config
 └── Dockerfile                  # Container support
@@ -647,6 +700,7 @@ neurosync/
 | Structured storage | SQLite (WAL mode) | Zero setup, fast, thread-safe |
 | Semantic search | ChromaDB | Local vector DB, cosine similarity |
 | Knowledge graph | Neo4j (optional) | Visualize memory as a connected graph |
+| Graph frontend | React 18 + react-force-graph-2d | Interactive cosmological graph visualization |
 | Transport | MCP JSON-RPC 2.0 over stdio | Standard protocol for AI tool integration |
 | Build | hatchling | Modern Python packaging |
 | Testing | pytest + pytest-cov | ~368 tests, 88%+ coverage |

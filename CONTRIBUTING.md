@@ -143,7 +143,7 @@ Use [Conventional Commits](https://www.conventionalcommits.org/) format:
 
 ### Scopes (optional)
 
-Use the module name: `db`, `vectorstore`, `mcp`, `cli`, `episodic`, `semantic`, `working`, `consolidation`, `config`, `protocol`, `signals`, `quality`, `retrieval`.
+Use the module name: `db`, `vectorstore`, `mcp`, `cli`, `episodic`, `semantic`, `working`, `consolidation`, `config`, `protocol`, `signals`, `quality`, `retrieval`, `graph`, `frontend`.
 
 ### Examples
 
@@ -338,6 +338,8 @@ record -> episodes (SQLite + ChromaDB)
 | `cli.py` | Interface | CLI commands |
 | `signals.py` | Scoring | Episode weight calculation |
 | `quality.py` | Scoring | Episode quality scoring |
+| `graph.py` | Storage | Neo4j knowledge graph sync & querying |
+| `frontend/` | Visualization | React + TypeScript interactive graph viewer |
 
 ## What Not to Do
 

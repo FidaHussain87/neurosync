@@ -61,3 +61,28 @@ Theory created → confidence 0.5
   → Confidence ≤ 0.05 → auto-retired
   → Manually retired → active = false
 ```
+
+## Neo4j Graph Sync
+
+```
+neurosync graph-sync
+  → Read all Sessions, Episodes, Theories, Concepts,
+    Contradictions, FailureRecords, StructuralPatterns,
+    UserKnowledge from SQLite
+  → MERGE into Neo4j nodes (idempotent, upsert)
+  → Create relationships: CONTAINS, EXTRACTED_FROM, CAUSES,
+    CONTRADICTS, OBSERVED_IN, PARENT_OF, HAS_PATTERN, etc.
+  → Clean up stale nodes not present in SQLite
+```
+
+## Frontend Visualization
+
+```
+User opens frontend (localhost:5173)
+  → Enters Neo4j credentials → Bolt WebSocket connection
+  → Load Overview → Two parallel Cypher queries (Sessions+Episodes, Theories+relationships)
+  → Nodes assigned to Louvain communities → Cluster view at zoom < 3x
+  → Click node → expandNode() fetches 1-hop neighborhood → Merge into graph
+  → Run pre-built/custom query → Full graph replacement with zoomToFit
+  → Click node → Detail panel slides in (properties, connections, navigation)
+```

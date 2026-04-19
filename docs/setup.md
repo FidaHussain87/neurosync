@@ -79,6 +79,40 @@ Config file (`~/.neurosync/config.json`):
 }
 ```
 
+## Neo4j Knowledge Graph (Optional)
+
+```bash
+# Install the Neo4j driver
+pip install neurosync[neo4j]
+
+# Start Neo4j with Docker
+docker run -d --name neo4j -p 7474:7474 -p 7687:7687 -e NEO4J_AUTH=neo4j/neurosync123 neo4j:5
+
+# Set the password
+export NEUROSYNC_NEO4J_PASSWORD="neurosync123"
+
+# Sync your memory to the graph
+neurosync graph-sync
+```
+
+## Frontend Visualization (Optional)
+
+The interactive graph visualization connects directly to Neo4j and renders your knowledge graph as a cosmological universe.
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Open http://localhost:5173, enter your Neo4j credentials (same as above), and click **Load Overview**.
+
+For production builds:
+```bash
+npm run build     # outputs to frontend/dist/
+npm run preview   # preview the production build
+```
+
 ## Reset
 
 To clear all data:

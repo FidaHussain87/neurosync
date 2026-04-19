@@ -1,9 +1,9 @@
 ---
 name: neurosync
-description: Run NeuroSync memory system commands — status, consolidate, recall, remember, query, theories, reset
+description: Run NeuroSync memory system commands — status, consolidate, recall, remember, query, theories, graph-sync, graph-status, reset
 disable-model-invocation: true
 allowed-tools: Bash(neurosync *) mcp__neurosync__*
-argument-hint: "[status|consolidate|recall|remember|query|theories|reset]"
+argument-hint: "[status|consolidate|recall|remember|query|theories|graph-sync|graph-status|reset]"
 ---
 
 # NeuroSync Skill
@@ -50,6 +50,19 @@ Call the MCP tool `neurosync_query` with the text provided after "query":
 ### `theories` — Browse learned patterns
 Call the MCP tool `neurosync_theories` with `action: list`. Display results in a readable format showing theory content, confidence, and confirmation count.
 
+### `graph-sync` — Sync memory data to Neo4j knowledge graph
+Syncs all sessions, episodes, theories, concepts, contradictions, failures, patterns, and user knowledge from SQLite/ChromaDB into the Neo4j knowledge graph for visualization.
+```bash
+neurosync graph-sync
+```
+Display the sync summary (nodes and relationships created/updated). If it fails with "neo4j package not installed", tell the user to run `pip install neurosync[neo4j]`.
+
+### `graph-status` — Check Neo4j knowledge graph health
+```bash
+neurosync graph-status
+```
+Display the connection status, node counts by type, and relationship counts.
+
 ### `reset` — Clear all memory data
 **Dangerous operation.** Warn the user, then if they confirm:
 ```bash
@@ -66,5 +79,7 @@ If `$ARGUMENTS` is empty, show this quick reference:
 /neurosync remember <text> — Store an important fact
 /neurosync query <text>  — Search memories (prefix: failures: causal: analogy:)
 /neurosync theories      — Browse all learned patterns
+/neurosync graph-sync    — Sync memory to Neo4j knowledge graph
+/neurosync graph-status  — Check Neo4j graph health and counts
 /neurosync reset         — Clear all memory data (dangerous)
 ```

@@ -29,7 +29,19 @@ Session Events → record() → Episodes (SQLite + ChromaDB)
                           consolidate() → Theories (SQLite + ChromaDB)
                                  ↓
                             recall() → Working Memory Context
+                                 ↓
+                          graph-sync → Neo4j Knowledge Graph (optional)
+                                 ↓
+                           frontend → Interactive Visualization (optional)
 ```
+
+## Neo4j Knowledge Graph (Optional)
+
+SQLite data is synced to Neo4j on demand via `neurosync graph-sync`. Neo4j provides a connected graph representation of all memory entities (Sessions, Episodes, Theories, Concepts, Contradictions, Failures, Patterns, UserKnowledge) with relationships like CONTAINS, EXTRACTED_FROM, CAUSES, CONTRADICTS, and PARENT_OF.
+
+## Frontend Visualization (Optional)
+
+A standalone React + TypeScript web app (`frontend/`) connects directly to Neo4j via Bolt WebSocket and renders the knowledge graph using `react-force-graph-2d`. Features multi-layer parallax star field, space-time fabric curvature near massive nodes, mass-weighted gravitational physics, Louvain community detection for cluster view, progressive loading, and 12 pre-built Cypher queries.
 
 ## Signal Weighting
 
