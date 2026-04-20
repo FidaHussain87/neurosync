@@ -537,6 +537,15 @@ def _try_auto_consolidate() -> Optional[dict]:
                 result["forgetting"] = forget_result
             except Exception:
                 logger.debug("Forgetting pass failed after consolidation", exc_info=True)
+        # Auto-sync new theories to Neo4j graph if available
+        if result:
+            try:
+                graph = _get_graph()
+                if graph:
+                    sync_result = graph.sync(_db)
+                    result["graph_sync"] = sync_result
+            except Exception:
+                logger.debug("Graph sync failed after consolidation", exc_info=True)
         return result
     return None
 
