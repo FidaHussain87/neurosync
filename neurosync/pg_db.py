@@ -259,6 +259,7 @@ class PostgresDatabase:
         conn = self._get_conn()
         try:
             import psycopg2.extras
+
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 cur.execute(sql, params)
                 return [dict(row) for row in cur.fetchall()]
@@ -291,7 +292,7 @@ class PostgresDatabase:
                         )
                 else:
                     # Fresh DB — split and execute each statement individually
-                    for stmt in _SCHEMA_SQL.split(';'):
+                    for stmt in _SCHEMA_SQL.split(";"):
                         stmt = stmt.strip()
                         if stmt:
                             cur.execute(stmt)
@@ -331,7 +332,7 @@ class PostgresDatabase:
 
     @staticmethod
     def _normalize_text(text: str) -> str:
-        return re.sub(r'\s+', ' ', text.strip().lower())
+        return re.sub(r"\s+", " ", text.strip().lower())
 
     # --- Sessions ---
 
@@ -346,9 +347,14 @@ class PostgresDatabase:
                duration_seconds=EXCLUDED.duration_seconds, summary=EXCLUDED.summary,
                metadata=EXCLUDED.metadata""",
             (
-                session.id, session.project, session.branch,
-                session.started_at, session.ended_at, session.duration_seconds,
-                session.summary, self._to_json(session.metadata),
+                session.id,
+                session.project,
+                session.branch,
+                session.started_at,
+                session.ended_at,
+                session.duration_seconds,
+                session.summary,
+                self._to_json(session.metadata),
             ),
         )
         return session
@@ -364,16 +370,18 @@ class PostgresDatabase:
                 (project, limit),
             )
         else:
-            rows = self._query(
-                "SELECT * FROM sessions ORDER BY started_at DESC LIMIT %s", (limit,)
-            )
+            rows = self._query("SELECT * FROM sessions ORDER BY started_at DESC LIMIT %s", (limit,))
         return [self._row_to_session(r) for r in rows]
 
     def _row_to_session(self, row: dict[str, Any]) -> Session:
         return Session(
-            id=row["id"], project=row["project"], branch=row["branch"],
-            started_at=row["started_at"], ended_at=row["ended_at"],
-            duration_seconds=row["duration_seconds"], summary=row["summary"],
+            id=row["id"],
+            project=row["project"],
+            branch=row["branch"],
+            started_at=row["started_at"],
+            ended_at=row["ended_at"],
+            duration_seconds=row["duration_seconds"],
+            summary=row["summary"],
             metadata=self._from_json(row["metadata"], {}),
         )
 
@@ -393,13 +401,25 @@ class PostgresDatabase:
                metadata=EXCLUDED.metadata, reinforcement_count=EXCLUDED.reinforcement_count,
                last_accessed=EXCLUDED.last_accessed, structural_fingerprint=EXCLUDED.structural_fingerprint""",
             (
-                episode.id, episode.session_id, episode.timestamp, episode.event_type,
-                episode.content, episode.context,
-                self._to_json(episode.files_touched), self._to_json(episode.layers_touched),
-                episode.signal_weight, episode.consolidated, episode.consolidated_at,
-                episode.cause, episode.effect, episode.reasoning, episode.quality_score,
-                self._to_json(episode.metadata), episode.reinforcement_count,
-                episode.last_accessed, episode.structural_fingerprint,
+                episode.id,
+                episode.session_id,
+                episode.timestamp,
+                episode.event_type,
+                episode.content,
+                episode.context,
+                self._to_json(episode.files_touched),
+                self._to_json(episode.layers_touched),
+                episode.signal_weight,
+                episode.consolidated,
+                episode.consolidated_at,
+                episode.cause,
+                episode.effect,
+                episode.reasoning,
+                episode.quality_score,
+                self._to_json(episode.metadata),
+                episode.reinforcement_count,
+                episode.last_accessed,
+                episode.structural_fingerprint,
             ),
         )
         return episode
@@ -409,8 +429,11 @@ class PostgresDatabase:
         return self._row_to_episode(row) if row else None
 
     def list_episodes(
-        self, session_id: Optional[str] = None, consolidated: Optional[int] = None,
-        event_type: Optional[str] = None, limit: int = 100,
+        self,
+        session_id: Optional[str] = None,
+        consolidated: Optional[int] = None,
+        event_type: Optional[str] = None,
+        limit: int = 100,
     ) -> list[Episode]:
         clauses = []
         params: list[Any] = []
@@ -458,14 +481,19 @@ class PostgresDatabase:
 
     def _row_to_episode(self, row: dict[str, Any]) -> Episode:
         return Episode(
-            id=row["id"], session_id=row["session_id"], timestamp=row["timestamp"],
-            event_type=row["event_type"], content=row["content"],
+            id=row["id"],
+            session_id=row["session_id"],
+            timestamp=row["timestamp"],
+            event_type=row["event_type"],
+            content=row["content"],
             context=row["context"] or "",
             files_touched=self._from_json(row["files_touched"], []),
             layers_touched=self._from_json(row["layers_touched"], []),
-            signal_weight=row["signal_weight"], consolidated=row["consolidated"],
+            signal_weight=row["signal_weight"],
+            consolidated=row["consolidated"],
             consolidated_at=row["consolidated_at"],
-            cause=row["cause"] or "", effect=row["effect"] or "",
+            cause=row["cause"] or "",
+            effect=row["effect"] or "",
             reasoning=row["reasoning"] or "",
             quality_score=row["quality_score"],
             metadata=self._from_json(row["metadata"], {}),
@@ -480,8 +508,13 @@ class PostgresDatabase:
         result = self._execute(
             """INSERT INTO signals (episode_id, signal_type, raw_value, multiplier, timestamp)
                VALUES (%s, %s, %s, %s, %s) RETURNING id""",
-            (signal.episode_id, signal.signal_type, signal.raw_value,
-             signal.multiplier, signal.timestamp),
+            (
+                signal.episode_id,
+                signal.signal_type,
+                signal.raw_value,
+                signal.multiplier,
+                signal.timestamp,
+            ),
             returning=True,
         )
         if result:
@@ -489,13 +522,16 @@ class PostgresDatabase:
         return signal
 
     def get_signals_for_episode(self, episode_id: str) -> list[Signal]:
-        rows = self._query(
-            "SELECT * FROM signals WHERE episode_id = %s", (episode_id,)
-        )
+        rows = self._query("SELECT * FROM signals WHERE episode_id = %s", (episode_id,))
         return [
-            Signal(id=r["id"], episode_id=r["episode_id"], signal_type=r["signal_type"],
-                   raw_value=r["raw_value"], multiplier=r["multiplier"],
-                   timestamp=r["timestamp"])
+            Signal(
+                id=r["id"],
+                episode_id=r["episode_id"],
+                signal_type=r["signal_type"],
+                raw_value=r["raw_value"],
+                multiplier=r["multiplier"],
+                timestamp=r["timestamp"],
+            )
             for r in rows
         ]
 
@@ -527,15 +563,26 @@ class PostgresDatabase:
                hierarchy_depth=EXCLUDED.hierarchy_depth,
                structural_fingerprint=EXCLUDED.structural_fingerprint""",
             (
-                theory.id, theory.content, theory.scope, theory.scope_qualifier,
-                theory.confidence, theory.confirmation_count,
-                theory.contradiction_count, theory.first_observed,
-                theory.last_confirmed, self._to_json(theory.source_episodes),
-                theory.superseded_by, theory.active,
-                theory.description_length, theory.parent_theory_id,
-                self._to_json(theory.related_theories), theory.last_applied,
-                theory.application_count, theory.validation_status,
-                self._to_json(theory.metadata), theory.hierarchy_depth,
+                theory.id,
+                theory.content,
+                theory.scope,
+                theory.scope_qualifier,
+                theory.confidence,
+                theory.confirmation_count,
+                theory.contradiction_count,
+                theory.first_observed,
+                theory.last_confirmed,
+                self._to_json(theory.source_episodes),
+                theory.superseded_by,
+                theory.active,
+                theory.description_length,
+                theory.parent_theory_id,
+                self._to_json(theory.related_theories),
+                theory.last_applied,
+                theory.application_count,
+                theory.validation_status,
+                self._to_json(theory.metadata),
+                theory.hierarchy_depth,
                 theory.structural_fingerprint,
             ),
         )
@@ -546,8 +593,11 @@ class PostgresDatabase:
         return self._row_to_theory(row) if row else None
 
     def list_theories(
-        self, active_only: bool = True, scope: Optional[str] = None,
-        project: Optional[str] = None, limit: int = 50,
+        self,
+        active_only: bool = True,
+        scope: Optional[str] = None,
+        project: Optional[str] = None,
+        limit: int = 50,
     ) -> list[Theory]:
         clauses = []
         params: list[Any] = []
@@ -576,8 +626,11 @@ class PostgresDatabase:
 
     def _row_to_theory(self, row: dict[str, Any]) -> Theory:
         return Theory(
-            id=row["id"], content=row["content"], scope=row["scope"],
-            scope_qualifier=row["scope_qualifier"], confidence=row["confidence"],
+            id=row["id"],
+            content=row["content"],
+            scope=row["scope"],
+            scope_qualifier=row["scope_qualifier"],
+            confidence=row["confidence"],
             confirmation_count=row["confirmation_count"],
             contradiction_count=row["contradiction_count"],
             first_observed=row["first_observed"],
@@ -603,9 +656,14 @@ class PostgresDatabase:
             """INSERT INTO contradictions
                (theory_id, episode_id, description, resolution, resolved_at, created_at)
                VALUES (%s, %s, %s, %s, %s, %s) RETURNING id""",
-            (contradiction.theory_id, contradiction.episode_id,
-             contradiction.description, contradiction.resolution,
-             contradiction.resolved_at, contradiction.created_at),
+            (
+                contradiction.theory_id,
+                contradiction.episode_id,
+                contradiction.description,
+                contradiction.resolution,
+                contradiction.resolved_at,
+                contradiction.created_at,
+            ),
             returning=True,
         )
         if result:
@@ -613,7 +671,9 @@ class PostgresDatabase:
         return contradiction
 
     def list_contradictions(
-        self, theory_id: Optional[str] = None, unresolved_only: bool = False,
+        self,
+        theory_id: Optional[str] = None,
+        unresolved_only: bool = False,
         limit: int = 50,
     ) -> list[Contradiction]:
         clauses = []
@@ -631,9 +691,13 @@ class PostgresDatabase:
         )
         return [
             Contradiction(
-                id=r["id"], theory_id=r["theory_id"], episode_id=r["episode_id"],
-                description=r["description"], resolution=r["resolution"],
-                resolved_at=r["resolved_at"], created_at=r["created_at"],
+                id=r["id"],
+                theory_id=r["theory_id"],
+                episode_id=r["episode_id"],
+                description=r["description"],
+                resolution=r["resolution"],
+                resolved_at=r["resolved_at"],
+                created_at=r["created_at"],
             )
             for r in rows
         ]
@@ -655,16 +719,31 @@ class PostgresDatabase:
                 """UPDATE user_model SET topic=%s, project=%s, familiarity=%s,
                    last_seen=%s, times_seen=%s, times_explained=%s, metadata=%s
                    WHERE id=%s""",
-                (uk.topic, uk.project, uk.familiarity, uk.last_seen,
-                 uk.times_seen, uk.times_explained, self._to_json(uk.metadata), uk.id),
+                (
+                    uk.topic,
+                    uk.project,
+                    uk.familiarity,
+                    uk.last_seen,
+                    uk.times_seen,
+                    uk.times_explained,
+                    self._to_json(uk.metadata),
+                    uk.id,
+                ),
             )
         else:
             result = self._execute(
                 """INSERT INTO user_model
                    (topic, project, familiarity, last_seen, times_seen, times_explained, metadata)
                    VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id""",
-                (uk.topic, uk.project, uk.familiarity, uk.last_seen,
-                 uk.times_seen, uk.times_explained, self._to_json(uk.metadata)),
+                (
+                    uk.topic,
+                    uk.project,
+                    uk.familiarity,
+                    uk.last_seen,
+                    uk.times_seen,
+                    uk.times_explained,
+                    self._to_json(uk.metadata),
+                ),
                 returning=True,
             )
             if result:
@@ -679,9 +758,13 @@ class PostgresDatabase:
         if not row:
             return None
         return UserKnowledge(
-            id=row["id"], topic=row["topic"], project=row["project"],
-            familiarity=row["familiarity"], last_seen=row["last_seen"],
-            times_seen=row["times_seen"], times_explained=row["times_explained"],
+            id=row["id"],
+            topic=row["topic"],
+            project=row["project"],
+            familiarity=row["familiarity"],
+            last_seen=row["last_seen"],
+            times_seen=row["times_seen"],
+            times_explained=row["times_explained"],
             metadata=self._from_json(row["metadata"], {}),
         )
 
@@ -695,9 +778,13 @@ class PostgresDatabase:
             rows = self._query("SELECT * FROM user_model ORDER BY familiarity DESC")
         return [
             UserKnowledge(
-                id=r["id"], topic=r["topic"], project=r["project"],
-                familiarity=r["familiarity"], last_seen=r["last_seen"],
-                times_seen=r["times_seen"], times_explained=r["times_explained"],
+                id=r["id"],
+                topic=r["topic"],
+                project=r["project"],
+                familiarity=r["familiarity"],
+                last_seen=r["last_seen"],
+                times_seen=r["times_seen"],
+                times_explained=r["times_explained"],
                 metadata=self._from_json(r["metadata"], {}),
             )
             for r in rows
@@ -705,14 +792,19 @@ class PostgresDatabase:
 
     # --- Episode helpers ---
 
-    def update_episode_access(self, episode_id: str, reinforcement_count: int, last_accessed: str) -> None:
+    def update_episode_access(
+        self, episode_id: str, reinforcement_count: int, last_accessed: str
+    ) -> None:
         self._execute(
             "UPDATE episodes SET reinforcement_count = %s, last_accessed = %s WHERE id = %s",
             (reinforcement_count, last_accessed, episode_id),
         )
 
     def list_episodes_for_pruning(
-        self, min_age_days: int = 30, consolidated: int = 1, limit: int = 500,
+        self,
+        min_age_days: int = 30,
+        consolidated: int = 1,
+        limit: int = 500,
     ) -> list[Episode]:
         rows = self._query(
             """SELECT * FROM episodes
@@ -745,11 +837,22 @@ class PostgresDatabase:
                    project=%s, updated_at=%s,
                    cause_text_normalized=%s, effect_text_normalized=%s
                    WHERE id=%s""",
-                (link.cause_text, link.effect_text, link.mechanism,
-                 link.mechanism_detail, link.confidence_level, link.strength,
-                 link.observation_count, self._to_json(link.source_episode_ids),
-                 link.source_theory_id, link.project, link.updated_at,
-                 norm_cause, norm_effect, link.id),
+                (
+                    link.cause_text,
+                    link.effect_text,
+                    link.mechanism,
+                    link.mechanism_detail,
+                    link.confidence_level,
+                    link.strength,
+                    link.observation_count,
+                    self._to_json(link.source_episode_ids),
+                    link.source_theory_id,
+                    link.project,
+                    link.updated_at,
+                    norm_cause,
+                    norm_effect,
+                    link.id,
+                ),
             )
         else:
             result = self._execute(
@@ -760,11 +863,22 @@ class PostgresDatabase:
                     created_at, updated_at,
                     cause_text_normalized, effect_text_normalized)
                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id""",
-                (link.cause_text, link.effect_text, link.mechanism,
-                 link.mechanism_detail, link.confidence_level, link.strength,
-                 link.observation_count, self._to_json(link.source_episode_ids),
-                 link.source_theory_id, link.project,
-                 link.created_at, link.updated_at, norm_cause, norm_effect),
+                (
+                    link.cause_text,
+                    link.effect_text,
+                    link.mechanism,
+                    link.mechanism_detail,
+                    link.confidence_level,
+                    link.strength,
+                    link.observation_count,
+                    self._to_json(link.source_episode_ids),
+                    link.source_theory_id,
+                    link.project,
+                    link.created_at,
+                    link.updated_at,
+                    norm_cause,
+                    norm_effect,
+                ),
                 returning=True,
             )
             if result:
@@ -776,8 +890,11 @@ class PostgresDatabase:
         return self._row_to_causal_link(row) if row else None
 
     def list_causal_links(
-        self, cause_text: Optional[str] = None, effect_text: Optional[str] = None,
-        project: Optional[str] = None, limit: int = 100,
+        self,
+        cause_text: Optional[str] = None,
+        effect_text: Optional[str] = None,
+        project: Optional[str] = None,
+        limit: int = 100,
     ) -> list[CausalLink]:
         clauses: list[str] = []
         params: list[Any] = []
@@ -817,7 +934,10 @@ class PostgresDatabase:
         return row["cnt"] if row else 0
 
     def list_causal_links_normalized(
-        self, cause_text: str, effect_text: str, limit: int = 5,
+        self,
+        cause_text: str,
+        effect_text: str,
+        limit: int = 5,
     ) -> list[CausalLink]:
         norm_cause = self._normalize_text(cause_text)
         norm_effect = self._normalize_text(effect_text)
@@ -831,15 +951,19 @@ class PostgresDatabase:
 
     def _row_to_causal_link(self, row: dict[str, Any]) -> CausalLink:
         return CausalLink(
-            id=row["id"], cause_text=row["cause_text"],
-            effect_text=row["effect_text"], mechanism=row["mechanism"],
+            id=row["id"],
+            cause_text=row["cause_text"],
+            effect_text=row["effect_text"],
+            mechanism=row["mechanism"],
             mechanism_detail=row["mechanism_detail"] or "",
             confidence_level=row["confidence_level"] or "observed",
-            strength=row["strength"], observation_count=row["observation_count"],
+            strength=row["strength"],
+            observation_count=row["observation_count"],
             source_episode_ids=self._from_json(row["source_episode_ids"], []),
             source_theory_id=row["source_theory_id"] or "",
             project=row["project"] or "",
-            created_at=row["created_at"], updated_at=row["updated_at"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
         )
 
     # --- Junction tables ---
@@ -886,7 +1010,9 @@ class PostgresDatabase:
         )
         return [r["episode_id"] for r in rows]
 
-    def set_entity_fingerprints(self, entity_id: str, entity_type: str, patterns: list[str]) -> None:
+    def set_entity_fingerprints(
+        self, entity_id: str, entity_type: str, patterns: list[str]
+    ) -> None:
         conn = self._get_conn()
         try:
             with conn.cursor() as cur:
@@ -914,7 +1040,9 @@ class PostgresDatabase:
         )
         return [r["pattern"] for r in rows]
 
-    def find_entities_by_fingerprint(self, pattern: str, entity_type: Optional[str] = None) -> list[dict[str, str]]:
+    def find_entities_by_fingerprint(
+        self, pattern: str, entity_type: Optional[str] = None
+    ) -> list[dict[str, str]]:
         if entity_type:
             rows = self._query(
                 "SELECT entity_id, entity_type FROM entity_fingerprints WHERE pattern = %s AND entity_type = %s",
@@ -931,7 +1059,10 @@ class PostgresDatabase:
 
     def list_all_entity_fingerprints(self) -> list[dict[str, str]]:
         rows = self._query("SELECT entity_id, entity_type, pattern FROM entity_fingerprints")
-        return [{"entity_id": r["entity_id"], "entity_type": r["entity_type"], "pattern": r["pattern"]} for r in rows]
+        return [
+            {"entity_id": r["entity_id"], "entity_type": r["entity_type"], "pattern": r["pattern"]}
+            for r in rows
+        ]
 
     def list_all_theory_episodes(self) -> list[dict[str, str]]:
         rows = self._query("SELECT theory_id, episode_id FROM theory_episodes")
@@ -939,11 +1070,15 @@ class PostgresDatabase:
 
     def list_all_theory_relations(self) -> list[dict[str, str]]:
         rows = self._query("SELECT theory_id, related_theory_id FROM theory_relations")
-        return [{"theory_id": r["theory_id"], "related_theory_id": r["related_theory_id"]} for r in rows]
+        return [
+            {"theory_id": r["theory_id"], "related_theory_id": r["related_theory_id"]} for r in rows
+        ]
 
     def list_all_causal_link_episodes(self) -> list[dict[str, Any]]:
         rows = self._query("SELECT causal_link_id, episode_id FROM causal_link_episodes")
-        return [{"causal_link_id": r["causal_link_id"], "episode_id": r["episode_id"]} for r in rows]
+        return [
+            {"causal_link_id": r["causal_link_id"], "episode_id": r["episode_id"]} for r in rows
+        ]
 
     # --- Failure Records ---
 
@@ -954,10 +1089,19 @@ class PostgresDatabase:
                    what_worked=%s, category=%s, project=%s, context=%s,
                    source_episode_id=%s, severity=%s, occurrence_count=%s,
                    last_seen=%s WHERE id=%s""",
-                (record.what_failed, record.why_failed, record.what_worked,
-                 record.category, record.project, record.context,
-                 record.source_episode_id, record.severity, record.occurrence_count,
-                 record.last_seen, record.id),
+                (
+                    record.what_failed,
+                    record.why_failed,
+                    record.what_worked,
+                    record.category,
+                    record.project,
+                    record.context,
+                    record.source_episode_id,
+                    record.severity,
+                    record.occurrence_count,
+                    record.last_seen,
+                    record.id,
+                ),
             )
         else:
             result = self._execute(
@@ -966,10 +1110,19 @@ class PostgresDatabase:
                     context, source_episode_id, severity, occurrence_count,
                     created_at, last_seen)
                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id""",
-                (record.what_failed, record.why_failed, record.what_worked,
-                 record.category, record.project, record.context,
-                 record.source_episode_id, record.severity, record.occurrence_count,
-                 record.created_at, record.last_seen),
+                (
+                    record.what_failed,
+                    record.why_failed,
+                    record.what_worked,
+                    record.category,
+                    record.project,
+                    record.context,
+                    record.source_episode_id,
+                    record.severity,
+                    record.occurrence_count,
+                    record.created_at,
+                    record.last_seen,
+                ),
                 returning=True,
             )
             if result:
@@ -983,8 +1136,11 @@ class PostgresDatabase:
         return self._row_to_failure_record(row)
 
     def list_failure_records(
-        self, project: Optional[str] = None, category: Optional[str] = None,
-        min_severity: int = 1, limit: int = 100,
+        self,
+        project: Optional[str] = None,
+        category: Optional[str] = None,
+        min_severity: int = 1,
+        limit: int = 100,
     ) -> list[FailureRecord]:
         clauses = ["severity >= %s"]
         params: list[Any] = [min_severity]
@@ -1014,15 +1170,18 @@ class PostgresDatabase:
 
     def _row_to_failure_record(self, row: dict[str, Any]) -> FailureRecord:
         return FailureRecord(
-            id=row["id"], what_failed=row["what_failed"],
+            id=row["id"],
+            what_failed=row["what_failed"],
             why_failed=row["why_failed"] or "",
             what_worked=row["what_worked"] or "",
             category=row["category"] or "approach",
             project=row["project"] or "",
             context=row["context"] or "",
             source_episode_id=row["source_episode_id"] or "",
-            severity=row["severity"], occurrence_count=row["occurrence_count"],
-            created_at=row["created_at"], last_seen=row["last_seen"],
+            severity=row["severity"],
+            occurrence_count=row["occurrence_count"],
+            created_at=row["created_at"],
+            last_seen=row["last_seen"],
         )
 
     # --- Stats ---

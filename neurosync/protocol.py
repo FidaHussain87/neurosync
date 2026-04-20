@@ -58,7 +58,4 @@ def generate_protocol_section() -> str:
 
 def generate_claude_md(project_name: str = "your project") -> str:
     """Generate a complete minimal CLAUDE.md with the NeuroSync protocol."""
-    return (
-        f"# {project_name} — AI Agent Instructions\n\n"
-        f"{MINIMAL_PROTOCOL}\n"
-    )
+    return f"# {project_name} — AI Agent Instructions\n\n{MINIMAL_PROTOCOL}\n"

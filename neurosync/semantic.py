@@ -112,9 +112,7 @@ class SemanticMemory:
         )
         return self._db.save_contradiction(contradiction)
 
-    def link_theories(
-        self, theory_id: str, related_ids: list[str]
-    ) -> Optional[Theory]:
+    def link_theories(self, theory_id: str, related_ids: list[str]) -> Optional[Theory]:
         """Link theories bidirectionally."""
         theory = self._db.get_theory(theory_id)
         if not theory:
@@ -133,9 +131,7 @@ class SemanticMemory:
         self._db.save_theory(theory)
         return theory
 
-    def set_parent_theory(
-        self, child_id: str, parent_id: str
-    ) -> Optional[Theory]:
+    def set_parent_theory(self, child_id: str, parent_id: str) -> Optional[Theory]:
         """Set a parent-child relationship between theories."""
         child = self._db.get_theory(child_id)
         if not child:
@@ -163,9 +159,7 @@ class SemanticMemory:
         theory = self._db.get_theory(theory_id)
         if not theory:
             return []
-        results = self._vs.search_theories(
-            theory.content, n_results=10, active_only=True
-        )
+        results = self._vs.search_theories(theory.content, n_results=10, active_only=True)
         related: list[Theory] = []
         for result in results:
             if result["id"] == theory_id:
@@ -230,9 +224,7 @@ class SemanticMemory:
         theory_id: Optional[str] = None,
         unresolved_only: bool = False,
     ) -> list[Contradiction]:
-        return self._db.list_contradictions(
-            theory_id=theory_id, unresolved_only=unresolved_only
-        )
+        return self._db.list_contradictions(theory_id=theory_id, unresolved_only=unresolved_only)
 
     # --- Search ---
 

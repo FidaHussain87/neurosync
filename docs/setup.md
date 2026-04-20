@@ -85,19 +85,62 @@ Config file (`~/.neurosync/config.json`):
 
 By default, NeuroSync uses SQLite. To switch to PostgreSQL:
 
+### Install the driver
+
 ```bash
-# Install the PostgreSQL driver
 pip install neurosync[postgresql]
+# or directly:
+pip install psycopg2-binary
+```
 
-# Start PostgreSQL (if not running)
-docker run -d --name neurosync-pg -p 5432:5432 -e POSTGRES_DB=neurosync -e POSTGRES_PASSWORD=neurosync postgres:16
+### Option A: Local PostgreSQL (Homebrew / pgAdmin)
 
-# Configure NeuroSync to use PostgreSQL
+If PostgreSQL is already installed locally (via Homebrew, pgAdmin, Postgres.app, etc.):
+
+```bash
+# Create the database
+createdb neurosync
+
+# Verify it works
+psql -d neurosync -c "SELECT current_database();"
+```
+
+Set the environment variables (add to `~/.zshrc` or `~/.bashrc`):
+
+```bash
+export NEUROSYNC_DB_BACKEND="postgresql"
+export NEUROSYNC_PG_DSN="postgresql://yourusername@localhost:5432/neurosync"
+```
+
+Replace `yourusername` with your system username (run `whoami` to check). If your PostgreSQL requires a password:
+
+```bash
+export NEUROSYNC_PG_DSN="postgresql://yourusername:yourpassword@localhost:5432/neurosync"
+```
+
+### Option B: Docker
+
+```bash
+docker run -d --name neurosync-pg -p 5432:5432 \
+  -e POSTGRES_DB=neurosync -e POSTGRES_PASSWORD=neurosync postgres:16
+
 export NEUROSYNC_DB_BACKEND="postgresql"
 export NEUROSYNC_PG_DSN="postgresql://postgres:neurosync@localhost:5432/neurosync"
 ```
 
-NeuroSync automatically creates all tables on first connection. If PostgreSQL is unreachable, it falls back to SQLite.
+### Verify
+
+```bash
+# Reload shell config
+source ~/.zshrc
+
+# Check NeuroSync connects to PostgreSQL
+neurosync status
+```
+
+NeuroSync automatically creates all 13 tables on first connection. If PostgreSQL is unreachable, it falls back to SQLite with a warning.
+
+> **Security note:** `NEUROSYNC_PG_DSN` is only read from environment variables, never from `config.json`. This prevents accidental commits of credentials.
 
 ## Neo4j Knowledge Graph (Optional)
 

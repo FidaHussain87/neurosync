@@ -14,10 +14,12 @@ def configure_logging(level: str = "INFO") -> None:
     if _configured:
         return
     handler = logging.StreamHandler(sys.stderr)
-    handler.setFormatter(logging.Formatter(
-        "%(asctime)s [%(name)s] %(levelname)s: %(message)s",
-        datefmt="%Y-%m-%dT%H:%M:%S",
-    ))
+    handler.setFormatter(
+        logging.Formatter(
+            "%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+            datefmt="%Y-%m-%dT%H:%M:%S",
+        )
+    )
     root = logging.getLogger("neurosync")
     root.addHandler(handler)
     root.setLevel(getattr(logging, level.upper(), logging.INFO))

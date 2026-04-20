@@ -162,15 +162,20 @@ class AnalogyEngine:
             structural_score = query_fp.similarity(result_fp)
             combined = semantic_weight * semantic_score + structural_weight * structural_score
 
-            scored.append((combined, {
-                "id": result["id"],
-                "content": result.get("document", ""),
-                "distance": cosine_dist,
-                "structural_similarity": structural_score,
-                "combined_score": round(combined, 4),
-                "fingerprint": result_fp.to_string(),
-                "metadata": result.get("metadata", {}),
-            }))
+            scored.append(
+                (
+                    combined,
+                    {
+                        "id": result["id"],
+                        "content": result.get("document", ""),
+                        "distance": cosine_dist,
+                        "structural_similarity": structural_score,
+                        "combined_score": round(combined, 4),
+                        "fingerprint": result_fp.to_string(),
+                        "metadata": result.get("metadata", {}),
+                    },
+                )
+            )
 
         # Sort by combined score descending, deduplicate by id
         scored.sort(key=lambda x: x[0], reverse=True)

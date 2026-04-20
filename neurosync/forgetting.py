@@ -75,7 +75,9 @@ class ForgettingEngine:
         Only prunes consolidated (state=1) episodes with quality < 5.
         """
         candidates = self._db.list_episodes_for_pruning(
-            min_age_days=7, consolidated=1, limit=max_prune * 3,
+            min_age_days=7,
+            consolidated=1,
+            limit=max_prune * 3,
         )
         pruned_ids: list[str] = []
         for episode in candidates:

@@ -18,21 +18,23 @@ def _new_id() -> str:
 
 # --- Episode event types ---
 
-EPISODE_TYPES = frozenset({
-    "decision",
-    "discovery",
-    "correction",
-    "pattern",
-    "frustration",
-    "question",
-    "file_change",
-    "architecture",
-    "debugging",
-    "explicit",
-    "causal",
-    "continuation",
-    "observed",
-})
+EPISODE_TYPES = frozenset(
+    {
+        "decision",
+        "discovery",
+        "correction",
+        "pattern",
+        "frustration",
+        "question",
+        "file_change",
+        "architecture",
+        "debugging",
+        "explicit",
+        "causal",
+        "continuation",
+        "observed",
+    }
+)
 
 # --- Theory validation statuses ---
 
@@ -44,26 +46,30 @@ THEORY_SCOPES = frozenset({"project", "domain", "craft"})
 
 # --- Causal mechanism types ---
 
-MECHANISM_TYPES = frozenset({
-    "direct",
-    "enabling",
-    "preventing",
-    "modulating",
-    "triggering",
-    "correlating",
-})
+MECHANISM_TYPES = frozenset(
+    {
+        "direct",
+        "enabling",
+        "preventing",
+        "modulating",
+        "triggering",
+        "correlating",
+    }
+)
 
 # --- Failure categories ---
 
-FAILURE_CATEGORIES = frozenset({
-    "approach",
-    "assumption",
-    "configuration",
-    "api_misuse",
-    "pattern",
-    "tooling",
-    "performance",
-})
+FAILURE_CATEGORIES = frozenset(
+    {
+        "approach",
+        "assumption",
+        "configuration",
+        "api_misuse",
+        "pattern",
+        "tooling",
+        "performance",
+    }
+)
 
 
 @dataclass

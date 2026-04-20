@@ -72,13 +72,15 @@ class GitObserver:
         if current_sha != self._baseline.head_sha:
             commits = self._get_commit_messages_since(self._baseline.head_sha)
             for msg in commits:
-                events.append({
-                    "type": "observed",
-                    "content": f"Committed: '{msg}'",
-                    "signal_weight": 0.3,
-                    "files": [],
-                    "layers": [],
-                })
+                events.append(
+                    {
+                        "type": "observed",
+                        "content": f"Committed: '{msg}'",
+                        "signal_weight": 0.3,
+                        "files": [],
+                        "layers": [],
+                    }
+                )
 
         # Collect file changes
         current_modified = set(self._get_modified_files())
@@ -88,16 +90,20 @@ class GitObserver:
             classified = self._classify_files(list(new_changes))
             summary_parts = []
             for file_type, files in sorted(classified.items()):
-                summary_parts.append(f"{len(files)} {file_type} file{'s' if len(files) != 1 else ''}")
+                summary_parts.append(
+                    f"{len(files)} {file_type} file{'s' if len(files) != 1 else ''}"
+                )
             summary = ", ".join(summary_parts)
             file_list = sorted(new_changes)
-            events.append({
-                "type": "observed",
-                "content": f"Files changed during session: {summary} ({', '.join(f for f in file_list[:10])})",
-                "signal_weight": 0.3,
-                "files": file_list,
-                "layers": [],
-            })
+            events.append(
+                {
+                    "type": "observed",
+                    "content": f"Files changed during session: {summary} ({', '.join(f for f in file_list[:10])})",
+                    "signal_weight": 0.3,
+                    "files": file_list,
+                    "layers": [],
+                }
+            )
 
         return events
 
