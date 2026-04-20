@@ -464,6 +464,36 @@ Create `~/.neurosync/config.json` for fine-tuning:
 
 ---
 
+## PostgreSQL Backend (Optional)
+
+By default, NeuroSync uses SQLite — zero setup, perfect for single-developer use. For production deployments or when you want a more robust database, you can switch to PostgreSQL.
+
+### Install the PostgreSQL driver
+
+```bash
+pip install neurosync[postgresql]
+```
+
+### Start PostgreSQL (if not running)
+
+```bash
+docker run -d --name neurosync-pg -p 5432:5432 \
+  -e POSTGRES_DB=neurosync -e POSTGRES_PASSWORD=neurosync postgres:16
+```
+
+### Configure NeuroSync to use PostgreSQL
+
+```bash
+export NEUROSYNC_DB_BACKEND="postgresql"
+export NEUROSYNC_PG_DSN="postgresql://postgres:neurosync@localhost:5432/neurosync"
+```
+
+NeuroSync automatically creates all tables on first connection. If PostgreSQL is unreachable, it falls back to SQLite.
+
+> **Security note:** The PostgreSQL connection string (`NEUROSYNC_PG_DSN`) is only read from environment variables, never from `config.json`. This prevents accidental commits of credentials.
+
+---
+
 ## Neo4j Knowledge Graph (Optional)
 
 NeuroSync can sync its memory to a Neo4j graph database, letting you visualize episodes, theories, causal chains, and their connections as an interactive knowledge graph — like neurons connected to ideas, events, and patterns.
@@ -657,25 +687,31 @@ neurosync/
 ├── neurosync/                  # The main Python package
 │   ├── mcp_server.py           # The MCP server (talks JSON-RPC over stdio, 10 tools)
 │   ├── cli.py                  # Command-line interface
-│   ├── config.py               # Settings management
+│   ├── config.py               # Settings management (env > config.json > defaults)
 │   ├── models.py               # Data structures (Session, Episode, Theory, etc.)
-│   ├── db.py                   # SQLite database operations (with schema migrations)
+│   ├── db.py                   # SQLite database (WAL mode, migrations) — default backend
+│   ├── pg_db.py                # PostgreSQL database (connection pooling, JSONB) — optional backend
 │   ├── vectorstore.py          # ChromaDB for semantic search
-│   ├── episodic.py             # Layer 1: session & episode management
+│   ├── episodic.py             # Layer 1: session & episode management, signal computation
 │   ├── semantic.py             # Layer 2: theory management, confidence & linking
 │   ├── working.py              # Layer 3: recall & winner-take-all
-│   ├── consolidation.py        # Consolidation engine (causal extraction + auto-trigger)
-│   ├── signals.py              # Signal weight calculations (8 types)
-│   ├── quality.py              # Episode quality scoring
+│   ├── retrieval.py            # Full recall pipeline with familiarity filtering & parent context
+│   ├── user_model.py           # Topic familiarity tracking & meta-learning
+│   ├── consolidation.py        # Consolidation engine (TF-IDF + causal merge + auto-trigger)
+│   ├── signals.py              # Signal weight calculations (7 active + 1 unwired)
+│   ├── quality.py              # Episode quality scoring (0-7 scale)
+│   ├── forgetting.py           # Ebbinghaus decay, spaced repetition, active pruning
+│   ├── analogy.py              # Structural fingerprinting, semantic+structural search
+│   ├── failure.py              # Failure records, proactive warnings, anti-patterns
+│   ├── hierarchy.py            # Theory hierarchy traversal, semantic parents, merging
+│   ├── causal.py               # Causal graph construction, querying, semantic fallback
 │   ├── hooks.py                # Claude Code auto-recall hook generation
 │   ├── git_observer.py         # Passive git state observation
 │   ├── protocol.py             # Minimal protocol text & CLAUDE.md generator
-│   ├── user_model.py           # Tracks what you already know
-│   ├── retrieval.py            # Full recall pipeline
 │   ├── starter_pack_loader.py  # Loads YAML starter packs
 │   ├── graph.py                # Optional Neo4j knowledge graph sync & querying
 │   └── starter_packs/          # Built-in theory packs (YAML files)
-├── tests/                      # Test suite (~368 tests, 88%+ coverage)
+├── tests/                      # Test suite (~368 tests, 86%+ coverage)
 ├── frontend/                   # Interactive graph visualization (React + TypeScript)
 │   ├── src/
 │   │   ├── components/         # GraphCanvas, Sidebar, DetailPanel, QueryRunner, ConnectionForm
@@ -697,13 +733,13 @@ neurosync/
 | Component | Technology | Why |
 |---|---|---|
 | Language | Python 3.9+ | Widely available, good ecosystem |
-| Structured storage | SQLite (WAL mode) | Zero setup, fast, thread-safe |
+| Structured storage | SQLite (WAL mode, default) or PostgreSQL (optional) | Zero setup default, production-grade optional |
 | Semantic search | ChromaDB | Local vector DB, cosine similarity |
 | Knowledge graph | Neo4j (optional) | Visualize memory as a connected graph |
 | Graph frontend | React 18 + react-force-graph-2d | Interactive cosmological graph visualization |
 | Transport | MCP JSON-RPC 2.0 over stdio | Standard protocol for AI tool integration |
 | Build | hatchling | Modern Python packaging |
-| Testing | pytest + pytest-cov | ~368 tests, 88%+ coverage |
+| Testing | pytest + pytest-cov | ~368 tests, 86%+ coverage |
 | Linting | ruff | Fast, comprehensive |
 
 ---
@@ -738,8 +774,10 @@ git clone <repo>
 cd neurosync
 pip install -e ".[dev]"
 
-# Optional: install with Neo4j support
-pip install -e ".[dev,neo4j]"
+# Optional extras:
+pip install -e ".[dev,neo4j]"          # With Neo4j knowledge graph support
+pip install -e ".[dev,postgresql]"      # With PostgreSQL backend support
+pip install -e ".[dev,neo4j,postgresql]" # All optional features
 ```
 
 ### Run tests
@@ -814,7 +852,7 @@ pip install build twine
 
 ```bash
 # 1. Update the version number
-#    Edit neurosync/version.py → change __version__ = "0.4.0" (or whatever)
+#    Edit neurosync/version.py → change __version__ = "0.5.0" (or whatever)
 
 # 2. Build the package (creates dist/ folder with .tar.gz and .whl files)
 python -m build
@@ -856,7 +894,7 @@ pip install --index-url https://test.pypi.org/simple/ neurosync
 - [ ] Check: `twine check dist/*`
 - [ ] Upload: `twine upload dist/*`
 - [ ] Verify: `pip install neurosync` in a fresh virtualenv
-- [ ] Tag the release: `git tag v0.4.0 && git push --tags`
+- [ ] Tag the release: `git tag v0.5.0 && git push --tags`
 
 ---
 

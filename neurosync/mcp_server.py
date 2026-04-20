@@ -20,7 +20,9 @@ from neurosync.hierarchy import TheoryHierarchy
 from neurosync.logging import configure_logging, get_logger
 from neurosync.models import EPISODE_TYPES
 from neurosync.quality import quality_warning
+from neurosync.retrieval import RetrievalPipeline
 from neurosync.semantic import SemanticMemory
+from neurosync.user_model import UserModel
 from neurosync.vectorstore import VectorStore
 from neurosync.version import __version__
 from neurosync.working import WorkingMemory
@@ -345,15 +347,19 @@ _causal: Optional[CausalGraph] = None
 _failure: Optional[FailureModel] = None
 _forgetting: Optional[ForgettingEngine] = None
 _hierarchy: Optional[TheoryHierarchy] = None
+_user_model: Optional[UserModel] = None
+_retrieval: Optional[RetrievalPipeline] = None
 _graph: Optional[Any] = None
 _current_session_id: Optional[str] = None
 _correction_count: int = 0
+_correction_topics: list[str] = []  # Topics corrected this session (for targeted penalization)
 _git_observer: Optional[GitObserver] = None
 
 
 def _init() -> None:
     global _config, _db, _vs, _episodic, _semantic, _working
     global _analogy, _causal, _failure, _forgetting, _hierarchy
+    global _user_model, _retrieval
     if _db is not None:
         return
 
@@ -362,7 +368,21 @@ def _init() -> None:
     configure_logging()
 
     # Database is essential — failure here is fatal
-    db = Database(config)
+    # Use PostgreSQL when configured, SQLite otherwise
+    db: Any
+    if config.db_backend == "postgresql":
+        try:
+            from neurosync.pg_db import PostgresDatabase
+            db = PostgresDatabase(config)
+            logger.info("Using PostgreSQL backend")
+        except ImportError:
+            logger.warning("psycopg2 not installed, falling back to SQLite")
+            db = Database(config)
+        except Exception:
+            logger.warning("PostgreSQL connection failed, falling back to SQLite", exc_info=True)
+            db = Database(config)
+    else:
+        db = Database(config)
 
     # VectorStore is optional — failure means degraded mode
     vs = None
@@ -380,6 +400,8 @@ def _init() -> None:
     failure = FailureModel(db, vs)
     forgetting = ForgettingEngine(db, vs)
     hierarchy = TheoryHierarchy(db, vs)
+    user_model = UserModel(db)
+    retrieval = RetrievalPipeline(db, vs, user_model=user_model, semantic=semantic)
 
     # Atomic commit — all or nothing
     _config = config
@@ -393,6 +415,8 @@ def _init() -> None:
     _failure = failure
     _forgetting = forgetting
     _hierarchy = hierarchy
+    _user_model = user_model
+    _retrieval = retrieval
 
 
 def _ensure_session(project: str = "", branch: str = "") -> str:
@@ -436,11 +460,19 @@ def _get_graph():
 def _try_auto_consolidate() -> Optional[dict]:
     """Run auto-consolidation if enabled and threshold is met. Returns result or None."""
     if _config and _config.auto_consolidation_enabled and _db and _vs and _episodic and _semantic:
-        return maybe_consolidate(
+        result = maybe_consolidate(
             _db, _vs, _episodic, _semantic,
             threshold=_config.auto_consolidation_threshold,
             min_episodes=_config.consolidation_min_episodes,
         )
+        # Run forgetting pass after consolidation to prune stale episodes and decay theories
+        if result and _forgetting:
+            try:
+                forget_result = _forgetting.run_forgetting_pass()
+                result["forgetting"] = forget_result
+            except Exception:
+                logger.debug("Forgetting pass failed after consolidation", exc_info=True)
+        return result
     return None
 
 
@@ -450,13 +482,14 @@ def _try_auto_consolidate() -> Optional[dict]:
 
 
 def handle_recall(params: dict[str, Any]) -> dict[str, Any]:
-    _require_init(_working, _failure, _hierarchy)
+    _require_init(_retrieval, _failure, _hierarchy, _forgetting)
     git_info = detect_git_info()
     project = params.get("project") or git_info.get("project", "")
     branch = params.get("branch") or git_info.get("branch", "")
     context = params.get("context", "")
     max_tokens = params.get("max_tokens", 500)
-    result = _working.recall(
+    # Use RetrievalPipeline (includes UserModel filtering, parent context, continuations)
+    result = _retrieval.recall(
         project=project,
         branch=branch,
         context=context,
@@ -467,6 +500,27 @@ def handle_recall(params: dict[str, Any]) -> dict[str, Any]:
             "neurosync_recall",
             {"message": "No memories yet. Start working and record episodes to build memory."},
         )
+    # Track user exposure to recalled theories (feeds UserModel familiarity)
+    if _user_model and project:
+        if result.get("primary"):
+            _user_model.record_exposure(
+                topic=result["primary"]["content"][:100],
+                project=project,
+                explained=False,
+            )
+        for sup in result.get("supporting", []):
+            _user_model.record_exposure(
+                topic=sup["content"][:100],
+                project=project,
+                explained=False,
+            )
+    # Refresh primary theory's retention (extends Ebbinghaus grace period)
+    if result.get("primary") and _forgetting:
+        primary_id = result["primary"].get("id", "")
+        if primary_id:
+            theory = _db.get_theory(primary_id)
+            if theory:
+                _forgetting.refresh_theory_on_application(theory)
     # Enrich with failure warnings
     query = f"{project} {branch} {context}".strip()
     if query:
@@ -498,18 +552,47 @@ def handle_record(params: dict[str, Any]) -> dict[str, Any]:
         event_type = event.get("type", "decision")
         if event_type not in EPISODE_TYPES:
             event_type = "decision"
+        content = event.get("content", "")
+        layers = event.get("layers", [])
+        # Compute SURPRISE signal: check if content contradicts any existing theory
+        contradicts = False
+        if _vs and content.strip():
+            try:
+                similar = _vs.search_theories(content, n_results=3, active_only=True)
+                for match in similar:
+                    dist = match.get("distance", 1.0)
+                    # Low distance = similar topic; check if content has contradiction language
+                    if dist < 0.4 and _has_contradiction_language(content):
+                        contradicts = True
+                        break
+            except Exception:
+                pass
+        # Compute REPETITION signal: check if user has explained this topic before
+        times_explained = 0
+        if _user_model and content.strip():
+            topic_key = content[:100]
+            uk = _db.get_user_knowledge(topic_key, project)
+            if uk:
+                times_explained = uk.times_explained
         episode = _episodic.record_episode(
             session_id=session_id,
             event_type=event_type,
-            content=event.get("content", ""),
+            content=content,
             files_touched=event.get("files", []),
-            layers_touched=event.get("layers", []),
+            layers_touched=layers,
             cause=event.get("cause", ""),
             effect=event.get("effect", ""),
             reasoning=event.get("reasoning", ""),
             importance=event.get("importance", 0),
+            contradicts_theory=contradicts,
+            times_explained=times_explained,
         )
         recorded.append(episode.id)
+        # Track user exposure when they explain something
+        if _user_model and project and content.strip():
+            _user_model.record_exposure(
+                topic=content[:100], project=project, explained=True,
+            )
         # Check quality
         if episode.quality_score is not None:
             warn = quality_warning(episode.quality_score)
@@ -534,6 +617,10 @@ def handle_record(params: dict[str, Any]) -> dict[str, Any]:
             observed_count += 1
     if summary:
         _episodic.end_session(session_id, summary=summary)
+    # Outcome-based confidence: if session had corrections, slightly reduce
+    # confidence of theories that were recalled but led to mistakes
+    if _correction_count > 0 and _semantic:
+        _apply_outcome_confidence_adjustment()
     result: dict[str, Any] = {
         "session_id": session_id,
         "episodes_recorded": len(recorded),
@@ -550,17 +637,112 @@ def handle_record(params: dict[str, Any]) -> dict[str, Any]:
     return _add_protocol_hint("neurosync_record", result)
 
 
+def _has_contradiction_language(text: str) -> bool:
+    """Check if text contains strong contradiction/correction indicators.
+
+    Uses multi-word phrases and strong negation patterns to avoid false
+    positives from common words like "instead" or "however" that appear
+    in normal technical writing.
+    """
+    # Strong indicators: phrases that strongly imply contradiction
+    strong_markers = (
+        "but actually", "not true", "this is wrong", "was wrong",
+        "is incorrect", "was incorrect", "doesn't work", "didn't work",
+        "this is broken", "was broken", "should not have",
+        "contrary to", "opposite of", "contradicts",
+        "that's a mistake", "was a mistake", "corrected to",
+        "the correct approach", "the right way", "not actually",
+    )
+    text_lower = text.lower()
+    if any(m in text_lower for m in strong_markers):
+        return True
+    # Require at least 2 weak indicators to trigger (co-occurrence reduces false positives)
+    weak_markers = (
+        "actually", "incorrect", "wrong", "mistake",
+        "corrected", "instead", "rather", "however",
+        "contrary", "broken",
+    )
+    weak_count = sum(1 for m in weak_markers if m in text_lower)
+    return weak_count >= 2
+
+
+def _apply_outcome_confidence_adjustment() -> None:
+    """Outcome-based confidence: reduce confidence of recently-applied theories
+    only when the correction topic is relevant to the theory content.
+
+    Uses Hebbian specificity: only weaken the activated pathway (theory whose
+    content overlaps with the correction), not all active theories globally.
+    """
+    if not _semantic or not _db or not _correction_topics:
+        return
+    try:
+        theories = _db.list_theories(active_only=True, limit=50)
+        penalty = min(_correction_count * 0.02, 0.1)  # Cap at 10% reduction
+        for theory in theories:
+            if not theory.last_applied or theory.application_count <= 0:
+                continue
+            # Only penalize if the theory's content is relevant to a correction topic
+            theory_lower = theory.content.lower()
+            relevant = any(
+                _topic_overlap(topic, theory_lower)
+                for topic in _correction_topics
+            )
+            if relevant:
+                theory.confidence = max(0.05, theory.confidence - penalty)
+                _db.save_theory(theory)
+    except Exception:
+        logger.debug("Outcome confidence adjustment failed", exc_info=True)
+
+
+def _topic_overlap(correction_text: str, theory_text: str) -> bool:
+    """Check if a correction topic is semantically related to a theory.
+
+    Uses keyword overlap: splits correction into significant words (3+ chars)
+    and checks if at least 2 appear in the theory, or if the full correction
+    phrase appears as a substring.
+    """
+    if correction_text in theory_text:
+        return True
+    words = [w for w in correction_text.split() if len(w) >= 3]
+    if not words:
+        return False
+    matches = sum(1 for w in words if w in theory_text)
+    # Require at least 2 keyword matches, or >40% overlap for short phrases
+    threshold = min(2, max(1, len(words) * 4 // 10))
+    return matches >= threshold
+
+
 def handle_remember(params: dict[str, Any]) -> dict[str, Any]:
     _require_init(_episodic)
     content = params.get("content", "")
     event_type = params.get("type", "explicit")
+    cause = params.get("cause", "")
+    effect = params.get("effect", "")
+    reasoning = params.get("reasoning", "")
+    importance = params.get("importance", 0)
     if not content.strip():
         return {"error": "Content is required"}
+    # Build enriched content with causal context if provided
+    enriched = content
+    if cause or effect:
+        parts = []
+        if cause:
+            parts.append(f"Cause: {cause}")
+        parts.append(content)
+        if effect:
+            parts.append(f"Effect: {effect}")
+        if reasoning:
+            parts.append(f"Reasoning: {reasoning}")
+        enriched = " | ".join(parts)
     session_id = _ensure_session()
     episode = _episodic.record_explicit(
         session_id=session_id,
-        content=content,
+        content=enriched,
         event_type=event_type,
+        importance=importance,
+        cause=cause,
+        effect=effect,
+        reasoning=reasoning,
     )
     result: dict[str, Any] = {
         "episode_id": episode.id,
@@ -608,7 +790,7 @@ def handle_query(params: dict[str, Any]) -> dict[str, Any]:
 
 
 def handle_correct(params: dict[str, Any]) -> dict[str, Any]:
-    global _correction_count
+    global _correction_count, _correction_topics
     _require_init(_episodic, _semantic, _failure)
     wrong = params.get("wrong", "")
     right = params.get("right", "")
@@ -616,6 +798,9 @@ def handle_correct(params: dict[str, Any]) -> dict[str, Any]:
     if not wrong.strip() or not right.strip():
         return {"error": "Both 'wrong' and 'right' are required"}
     _correction_count += 1
+    # Track correction topics for targeted confidence adjustment
+    _correction_topics.append(wrong.lower())
+    _correction_topics.append(right.lower())
     session_id = _ensure_session()
     episode = _episodic.record_correction(
         session_id=session_id,
@@ -640,6 +825,14 @@ def handle_correct(params: dict[str, Any]) -> dict[str, Any]:
     failure_rec = _failure.extract_from_correction(episode.id)
     if failure_rec:
         result["failure_record_id"] = failure_rec.id
+    # Track correction in user model
+    if _user_model:
+        git_info = detect_git_info()
+        proj = git_info.get("project", "")
+        # Record the wrong thing as a correction topic (we were wrong about it)
+        _user_model.record_correction_on_topic(topic=wrong[:100], project=proj)
+        # Record the right thing as exposure (user now knows this)
+        _user_model.record_exposure(topic=right[:100], project=proj, explained=True)
     auto_result = _try_auto_consolidate()
     if auto_result:
         result["auto_consolidation"] = auto_result
@@ -775,6 +968,13 @@ def handle_consolidate(params: dict[str, Any]) -> dict[str, Any]:
         from neurosync.consolidation import ConsolidationEngine
         engine = ConsolidationEngine(_db, _vs, _episodic, _semantic)
         result = engine.run(project=params.get("project"), dry_run=False)
+        # Run forgetting pass after manual consolidation
+        if _forgetting:
+            try:
+                forget_result = _forgetting.run_forgetting_pass()
+                result["forgetting"] = forget_result
+            except Exception:
+                logger.debug("Forgetting pass failed after consolidation", exc_info=True)
         return result
     except ImportError:
         return {

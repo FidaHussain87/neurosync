@@ -34,6 +34,10 @@ class NeuroSyncConfig:
     protocol_hints_enabled: bool = True
     auto_consolidation_enabled: bool = True
     auto_consolidation_threshold: int = 20
+    # Database backend: "sqlite" (default) or "postgresql"
+    db_backend: str = ""
+    # PostgreSQL connection string (only when db_backend="postgresql")
+    pg_dsn: str = ""
     neo4j_uri: str = ""
     neo4j_user: str = ""
     neo4j_password: str = ""
@@ -55,6 +59,13 @@ class NeuroSyncConfig:
             self.sqlite_path = os.path.join(self.data_dir, "neurosync.sqlite3")
         if not self.chroma_path:
             self.chroma_path = os.path.join(self.data_dir, "chroma")
+        if not self.db_backend:
+            self.db_backend = os.environ.get("NEUROSYNC_DB_BACKEND", "sqlite")
+        if not self.pg_dsn:
+            self.pg_dsn = os.environ.get(
+                "NEUROSYNC_PG_DSN",
+                "postgresql://localhost:5432/neurosync",
+            )
         if not self.neo4j_uri:
             self.neo4j_uri = os.environ.get("NEUROSYNC_NEO4J_URI", "bolt://localhost:7687")
         if not self.neo4j_user:
@@ -81,15 +92,16 @@ class NeuroSyncConfig:
             "NEUROSYNC_DATA_DIR",
             "NEUROSYNC_DEFAULT_PROJECT",
             "NEUROSYNC_DEFAULT_BRANCH",
+            "NEUROSYNC_DB_BACKEND",
         ):
             val = os.environ.get(env_key)
             if val:
                 field_name = env_key.replace("NEUROSYNC_", "").lower()
                 overrides[field_name] = val
-        # Never load neo4j_password from config.json — it must only come from
-        # the NEUROSYNC_NEO4J_PASSWORD environment variable (handled in __post_init__)
-        # to avoid storing secrets in plaintext on disk.
+        # Never load secrets from config.json — they must only come from
+        # environment variables (handled in __post_init__).
         overrides.pop("neo4j_password", None)
+        overrides.pop("pg_dsn", None)
         return cls(**{k: v for k, v in overrides.items() if k in cls.__dataclass_fields__})
 
     def ensure_dirs(self) -> None:

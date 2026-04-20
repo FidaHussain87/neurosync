@@ -1,4 +1,8 @@
-"""Signal weight calculations — 6 signal types that compose into episode weights."""
+"""Signal weight calculations — 8 signal types that compose into episode weights.
+
+Active: CORRECTION, DEPTH, SURPRISE, REPETITION, EXPLICIT, INTUITION, PASSIVE.
+Defined but unwired: DURATION (requires session-level timing data).
+"""
 
 from __future__ import annotations
 
@@ -136,9 +140,19 @@ def compute_episode_signals(
     session_duration: float = 0.0,
     is_explicit: bool = False,
     importance: int = 0,
+    is_passive: bool = False,
 ) -> tuple[list[SignalResult], float]:
-    """Compute all applicable signals for an episode. Returns (signals, composite_weight)."""
+    """Compute all applicable signals for an episode. Returns (signals, composite_weight).
+
+    Active signal types: CORRECTION, DEPTH, SURPRISE, REPETITION, EXPLICIT,
+    INTUITION, PASSIVE. DURATION is defined but requires session-level timing
+    data that is not yet collected.
+    """
     signals: list[SignalResult] = []
+
+    # PASSIVE: auto-observed events (git changes) — always record for audit trail
+    if is_passive or event_type == "observed":
+        signals.append(compute_passive_signal())
 
     if event_type == "correction" and correction_count > 0:
         signals.append(compute_correction_signal(correction_count))

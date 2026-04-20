@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
+import math
+import re
+from collections import Counter, defaultdict
 from typing import Any, Optional
 
 from neurosync.analogy import AnalogyEngine
@@ -53,7 +55,7 @@ class ConsolidationEngine:
         semantic: SemanticMemory,
         min_episodes: int = 5,
         similarity_threshold: float = 0.8,
-        mdl_threshold: float = 5.0,
+        mdl_threshold: float = 0.7,
     ) -> None:
         self._db = db
         self._vs = vectorstore
@@ -149,10 +151,10 @@ class ConsolidationEngine:
             unique_ids = list(set(consolidated_ids))
             self._episodic.mark_consolidated(unique_ids)
 
-        # 8. Apply confidence decay
+        # 8. Confidence decay is handled by ForgettingEngine.run_forgetting_pass()
+        # which is called after consolidation in mcp_server._try_auto_consolidate().
+        # This avoids competing linear vs Ebbinghaus decay systems.
         decayed = 0
-        if not dry_run:
-            decayed = self._semantic.apply_confidence_decay()
 
         result: dict[str, Any] = {
             "episodes_processed": len(episodes),
@@ -223,30 +225,26 @@ class ConsolidationEngine:
     def _extract_candidate(self, cluster: list[Episode]) -> Optional[str]:
         """Extract a candidate theory from a cluster of episodes.
 
-        Strategy: if causal episodes exist, compose a causal theory.
-        Otherwise, pick the most concise episode content as the theory basis.
+        Uses multi-strategy extraction (all local, no LLM):
+        1. Causal episodes → merge causes/effects into generalized causal theory
+        2. Multi-episode → extract shared keywords via TF-IDF and compose summary
+        3. Fallback → highest-weight episode with type annotation
         """
         if not cluster:
             return None
 
-        # Separate causal vs non-causal episodes
+        # Strategy 1: Causal episodes — merge multiple causes/effects
         causal_eps = [ep for ep in cluster if ep.cause and ep.effect]
-
         if causal_eps:
-            # Compose causal theory from highest-weight causal episode
-            sorted_causal = sorted(
-                causal_eps,
-                key=lambda ep: (-ep.signal_weight, len(ep.content)),
-            )
-            best = sorted_causal[0]
-            reasoning = best.reasoning or ""
-            if reasoning:
-                content = f"When {best.cause}, then {best.effect} because {reasoning}"
-            else:
-                content = f"When {best.cause}, then {best.effect}"
-            return content
+            return self._extract_causal_theory(causal_eps)
 
-        # Fallback: use highest-weighted, most concise episode
+        # Strategy 2: Multi-episode keyword extraction and summary
+        if len(cluster) >= 3:
+            keyword_theory = self._extract_keyword_theory(cluster)
+            if keyword_theory:
+                return keyword_theory
+
+        # Strategy 3: Fallback — highest-weight, most concise episode
         sorted_eps = sorted(
             cluster,
             key=lambda ep: (-ep.signal_weight, len(ep.content)),
@@ -256,7 +254,7 @@ class ConsolidationEngine:
         if not content:
             return None
 
-        # If all episodes share a common event type, note it
+        # Annotate with shared event type if uniform
         types = {ep.event_type for ep in cluster}
         if len(types) == 1:
             common_type = types.pop()
@@ -264,6 +262,122 @@ class ConsolidationEngine:
                 content = f"[{common_type}] {content}"
 
         return content
+
+    def _extract_causal_theory(self, causal_eps: list[Episode]) -> str:
+        """Merge multiple causal episodes into a generalized theory.
+
+        If multiple episodes share similar causes, combine their effects.
+        Otherwise, use the highest-weight causal episode.
+        """
+        sorted_causal = sorted(
+            causal_eps,
+            key=lambda ep: (-ep.signal_weight, len(ep.content)),
+        )
+        best = sorted_causal[0]
+        reasoning = best.reasoning or ""
+
+        if len(causal_eps) >= 2:
+            # Collect all unique effects
+            effects = []
+            seen_effects: set[str] = set()
+            for ep in sorted_causal:
+                effect_lower = ep.effect.strip().lower()
+                if effect_lower not in seen_effects:
+                    seen_effects.add(effect_lower)
+                    effects.append(ep.effect.strip())
+
+            if len(effects) > 1:
+                # Multiple effects from similar cause — merge
+                effects_text = "; ".join(effects[:3])
+                if reasoning:
+                    return f"When {best.cause}, then {effects_text} because {reasoning}"
+                return f"When {best.cause}, then {effects_text}"
+
+        # Single causal pattern
+        if reasoning:
+            return f"When {best.cause}, then {best.effect} because {reasoning}"
+        return f"When {best.cause}, then {best.effect}"
+
+    def _extract_keyword_theory(self, cluster: list[Episode]) -> Optional[str]:
+        """Extract shared themes from cluster using TF-IDF-like keyword scoring.
+
+        Pure local computation — no LLM calls.
+        """
+        # Tokenize each episode's content
+        stop_words = frozenset({
+            "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
+            "have", "has", "had", "do", "does", "did", "will", "would", "could",
+            "should", "may", "might", "shall", "can", "need", "to", "of", "in",
+            "for", "on", "with", "at", "by", "from", "as", "into", "through",
+            "during", "before", "after", "above", "below", "between", "and", "or",
+            "but", "if", "then", "else", "when", "while", "so", "that", "this",
+            "these", "those", "it", "its", "not", "no", "nor", "only", "own",
+            "same", "than", "too", "very", "just", "because", "about", "up",
+        })
+
+        def tokenize(text: str) -> list[str]:
+            words = re.findall(r'[a-zA-Z_][a-zA-Z0-9_]*', text.lower())
+            return [w for w in words if len(w) > 2 and w not in stop_words]
+
+        # Document frequency: how many episodes contain each word
+        doc_freq: Counter = Counter()
+        doc_tokens: list[list[str]] = []
+        for ep in cluster:
+            tokens = tokenize(ep.content)
+            doc_tokens.append(tokens)
+            unique_tokens = set(tokens)
+            for t in unique_tokens:
+                doc_freq[t] += 1
+
+        n_docs = len(cluster)
+        if n_docs < 2:
+            return None
+
+        # TF-IDF score: words that appear in multiple (but not all) documents are most informative
+        # Also weight by signal_weight of containing episodes
+        keyword_scores: Counter = Counter()
+        for i, tokens in enumerate(doc_tokens):
+            tf: Counter = Counter(tokens)
+            ep_weight = cluster[i].signal_weight
+            for word, count in tf.items():
+                df = doc_freq[word]
+                if df < 2:
+                    continue  # Must appear in at least 2 episodes
+                # IDF that peaks for words in ~half the documents
+                idf = math.log(n_docs / df) + 0.5
+                keyword_scores[word] += count * idf * min(ep_weight, 5.0)
+
+        top_keywords = [w for w, _ in keyword_scores.most_common(8)]
+        if len(top_keywords) < 2:
+            return None
+
+        # Find the most representative episode (highest overlap with top keywords)
+        best_ep = max(
+            cluster,
+            key=lambda ep: (
+                sum(1 for kw in top_keywords if kw in ep.content.lower()),
+                ep.signal_weight,
+            ),
+        )
+
+        # Compose theory: keywords as topic + representative content
+        theme = ", ".join(top_keywords[:5])
+        # Use shared event type if uniform
+        types = {ep.event_type for ep in cluster}
+        type_prefix = ""
+        if len(types) == 1:
+            t = types.pop()
+            if t != "decision":
+                type_prefix = f"[{t}] "
+
+        # Truncate representative content to be concise
+        rep_content = best_ep.content.strip()
+        if len(rep_content) > 200:
+            # Find sentence boundary near 200 chars
+            boundary = rep_content.rfind('. ', 100, 250)
+            rep_content = rep_content[:boundary + 1] if boundary > 0 else rep_content[:200] + "..."
+
+        return f"{type_prefix}{rep_content} (themes: {theme})"
 
     def _passes_mdl(self, candidate: str, cluster: list[Episode]) -> bool:
         """MDL pruning: reject if description_length / coverage is too high."""

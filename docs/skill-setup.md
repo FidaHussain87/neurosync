@@ -82,6 +82,8 @@ You should see it autocomplete. Press Enter with no arguments to see the help me
 /neurosync remember <text> — Store an important fact
 /neurosync query <text>  — Search memories (prefix: failures: causal: analogy:)
 /neurosync theories      — Browse all learned patterns
+/neurosync graph-sync    — Sync memory to Neo4j knowledge graph
+/neurosync graph-status  — Check Neo4j graph health and counts
 /neurosync reset         — Clear all memory data (dangerous)
 ```
 

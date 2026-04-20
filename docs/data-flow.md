@@ -6,25 +6,41 @@
 neurosync_record({events, session_summary})
   → Create/reuse Session
   → For each event:
-    → Create Episode (SQLite)
-    → Compute signal weight
+    → Create Episode (SQLite/PostgreSQL)
+    → Compute signal weights via compute_episode_signals():
+      - CORRECTION (if correction_count > 0)
+      - DEPTH (from layers_touched)
+      - SURPRISE (if contradicts existing theory)
+      - REPETITION (if times_explained > 1 via UserModel)
+      - EXPLICIT (if event_type == "explicit")
+      - INTUITION (if importance > 0)
+      - PASSIVE (if event_type == "observed")
+    → Save individual Signal records for audit trail
     → Embed in ChromaDB
   → For explicit_remember items:
     → Create Episode with EXPLICIT signal (weight x10)
+  → Capture git delta → PASSIVE observed episodes (weight x0.3)
+  → If corrections occurred: apply outcome-based confidence adjustment
+    (only to theories whose content overlaps with correction topics)
 ```
 
 ## Recall (Session Start)
 
 ```
 neurosync_recall({project, branch, context})
-  → Build query embedding
-  → Search theories (ChromaDB, top 10)
-  → Score: confidence / (1 + distance)
-  → Winner-take-all: pick highest
-  → Filter by user familiarity (suppress >0.9)
-  → Add 2-3 supporting theories
-  → Add recent episodes from same project
-  → Format within token budget (default 500)
+  → RetrievalPipeline.recall():
+    → Build query embedding
+    → Search theories (ChromaDB, top 10)
+    → Score: confidence / (1 + distance)
+    → Winner-take-all: pick highest
+    → Filter by UserModel familiarity (suppress >0.9)
+    → Include parent context for hierarchical theories
+    → Add 2-3 supporting theories
+    → Check for continuation episodes from prior sessions
+    → Add recent episodes from same project
+    → Format within token budget (default 500)
+  → Track user exposure via UserModel
+  → Refresh recalled theory retention via ForgettingEngine
 ```
 
 ## Correction
@@ -41,14 +57,19 @@ neurosync_correct({wrong, right, theory_id?})
 ```
 neurosync_consolidate({project?, dry_run?})
   → Gather unconsolidated episodes
-  → Cluster by semantic similarity
+  → Cluster by semantic similarity (ChromaDB cosine <0.8)
   → For each cluster (2+ episodes):
-    → Extract candidate theory
-    → MDL prune
+    → Extract candidate theory (3 strategies):
+      1. Causal merge: if episodes have cause/effect → "When X, then Y" rule
+      2. TF-IDF keywords: for 3+ episodes → keyword extraction + representative episode
+      3. Fallback: highest-weight episode content (truncated)
+    → MDL prune: reject if theory length > 70% of cluster content
     → Check for existing matching theory
-    → Confirm or create theory
+    → Confirm or create theory (initial confidence 0.5)
   → Mark episodes as consolidated
-  → Apply confidence decay on stale theories
+  → Run ForgettingEngine pass:
+    → Ebbinghaus retention curves prune low-retention episodes
+    → Decay stale theories without recent confirmation
 ```
 
 ## Confidence Lifecycle
@@ -57,7 +78,9 @@ neurosync_consolidate({project?, dry_run?})
 Theory created → confidence 0.5
   → Confirmed by consolidation → +0.1 * (1 - current) asymptotic
   → Contradicted → -0.15
-  → No confirmation for 30+ days → -0.01/day
+  → Session corrections on related topics → outcome-based penalty (max -0.1)
+  → Recalled and applied → retention refreshed via ForgettingEngine
+  → Ebbinghaus decay: R = e^(-t/S) where S = base × weight × quality × 2^reinforcements
   → Confidence ≤ 0.05 → auto-retired
   → Manually retired → active = false
 ```

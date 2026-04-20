@@ -30,6 +30,9 @@ dev = [
 neo4j = [
     "neo4j>=5.0",
 ]
+postgresql = [
+    "psycopg2-binary>=2.9",
+]
 
 [project.scripts]
 neurosync = "neurosync.cli:main"
@@ -49,7 +52,7 @@ markers = [
 
 [tool.coverage.run]
 source = ["neurosync"]
-omit = ["neurosync/starter_packs/*.py"]
+omit = ["neurosync/starter_packs/*.py", "neurosync/pg_db.py"]
 
 [tool.coverage.report]
 fail_under = 85
