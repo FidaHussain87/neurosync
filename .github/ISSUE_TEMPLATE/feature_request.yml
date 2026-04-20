@@ -31,9 +31,17 @@ body:
       description: Which area of NeuroSync does this relate to?
       options:
         - Memory (recording, recall, episodes)
-        - Consolidation (theories, clustering, MDL)
+        - Consolidation (theories, clustering, TF-IDF extraction)
+        - Forgetting / Decay (Ebbinghaus curves, retention)
+        - Signals (weighting, new signal types)
+        - User Model (familiarity tracking, meta-learning)
+        - Causal Reasoning (causal graph, chains)
+        - Analogy / Pattern matching
         - Protocol (CLAUDE.md rules, agent behavior)
         - MCP Tools (new tool, modify existing tool)
+        - Neo4j Graph (sync, queries, schema)
+        - Frontend Visualization (graph viewer, UI)
+        - Database Backend (SQLite, PostgreSQL)
         - CLI (commands, output)
         - Configuration
         - Documentation

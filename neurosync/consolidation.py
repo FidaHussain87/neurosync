@@ -36,7 +36,11 @@ def maybe_consolidate(
         if pending < threshold or pending < min_episodes:
             return None
         engine = ConsolidationEngine(
-            db, vs, episodic, semantic, min_episodes=min_episodes,
+            db,
+            vs,
+            episodic,
+            semantic,
+            min_episodes=min_episodes,
         )
         return engine.run()
     except Exception:
@@ -66,17 +70,12 @@ class ConsolidationEngine:
         self._similarity_threshold = similarity_threshold
         self._mdl_threshold = mdl_threshold
 
-    def run(
-        self, project: Optional[str] = None, dry_run: bool = False
-    ) -> dict[str, Any]:
+    def run(self, project: Optional[str] = None, dry_run: bool = False) -> dict[str, Any]:
         """Run full consolidation pipeline."""
         # 1. Gather unconsolidated episodes
         episodes = self._episodic.get_unconsolidated_episodes(limit=500)
         if project:
-            episodes = [
-                ep for ep in episodes
-                if self._episode_project(ep) == project
-            ]
+            episodes = [ep for ep in episodes if self._episode_project(ep) == project]
         if len(episodes) < self._min_episodes:
             return {
                 "message": f"Not enough episodes ({len(episodes)}/{self._min_episodes})",
@@ -108,11 +107,13 @@ class ConsolidationEngine:
                 continue
 
             if dry_run:
-                candidates.append({
-                    "content": candidate,
-                    "episode_count": len(cluster),
-                    "scope": self._classify_scope(cluster),
-                })
+                candidates.append(
+                    {
+                        "content": candidate,
+                        "episode_count": len(cluster),
+                        "scope": self._classify_scope(cluster),
+                    }
+                )
                 continue
 
             # Check for existing matching theory
@@ -304,19 +305,84 @@ class ConsolidationEngine:
         Pure local computation — no LLM calls.
         """
         # Tokenize each episode's content
-        stop_words = frozenset({
-            "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
-            "have", "has", "had", "do", "does", "did", "will", "would", "could",
-            "should", "may", "might", "shall", "can", "need", "to", "of", "in",
-            "for", "on", "with", "at", "by", "from", "as", "into", "through",
-            "during", "before", "after", "above", "below", "between", "and", "or",
-            "but", "if", "then", "else", "when", "while", "so", "that", "this",
-            "these", "those", "it", "its", "not", "no", "nor", "only", "own",
-            "same", "than", "too", "very", "just", "because", "about", "up",
-        })
+        stop_words = frozenset(
+            {
+                "the",
+                "a",
+                "an",
+                "is",
+                "are",
+                "was",
+                "were",
+                "be",
+                "been",
+                "being",
+                "have",
+                "has",
+                "had",
+                "do",
+                "does",
+                "did",
+                "will",
+                "would",
+                "could",
+                "should",
+                "may",
+                "might",
+                "shall",
+                "can",
+                "need",
+                "to",
+                "of",
+                "in",
+                "for",
+                "on",
+                "with",
+                "at",
+                "by",
+                "from",
+                "as",
+                "into",
+                "through",
+                "during",
+                "before",
+                "after",
+                "above",
+                "below",
+                "between",
+                "and",
+                "or",
+                "but",
+                "if",
+                "then",
+                "else",
+                "when",
+                "while",
+                "so",
+                "that",
+                "this",
+                "these",
+                "those",
+                "it",
+                "its",
+                "not",
+                "no",
+                "nor",
+                "only",
+                "own",
+                "same",
+                "than",
+                "too",
+                "very",
+                "just",
+                "because",
+                "about",
+                "up",
+            }
+        )
 
         def tokenize(text: str) -> list[str]:
-            words = re.findall(r'[a-zA-Z_][a-zA-Z0-9_]*', text.lower())
+            words = re.findall(r"[a-zA-Z_][a-zA-Z0-9_]*", text.lower())
             return [w for w in words if len(w) > 2 and w not in stop_words]
 
         # Document frequency: how many episodes contain each word
@@ -374,8 +440,8 @@ class ConsolidationEngine:
         rep_content = best_ep.content.strip()
         if len(rep_content) > 200:
             # Find sentence boundary near 200 chars
-            boundary = rep_content.rfind('. ', 100, 250)
-            rep_content = rep_content[:boundary + 1] if boundary > 0 else rep_content[:200] + "..."
+            boundary = rep_content.rfind(". ", 100, 250)
+            rep_content = rep_content[: boundary + 1] if boundary > 0 else rep_content[:200] + "..."
 
         return f"{type_prefix}{rep_content} (themes: {theme})"
 
@@ -426,17 +492,11 @@ class ConsolidationEngine:
 
     def _link_new_theory(self, theory_id: str) -> None:
         """After creating a theory, find and link related theories."""
-        related = self._semantic.find_related_theories(
-            theory_id, distance_threshold=0.4
-        )
+        related = self._semantic.find_related_theories(theory_id, distance_threshold=0.4)
         if related:
-            self._semantic.link_theories(
-                theory_id, [t.id for t in related]
-            )
+            self._semantic.link_theories(theory_id, [t.id for t in related])
 
-    def _check_parent_theory(
-        self, theory_id: str, cluster: list[Episode]
-    ) -> None:
+    def _check_parent_theory(self, theory_id: str, cluster: list[Episode]) -> None:
         """If new theory's source episodes are a superset of another theory's, set parent."""
         theory = self._db.get_theory(theory_id)
         if not theory:

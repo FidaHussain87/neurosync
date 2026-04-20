@@ -259,11 +259,23 @@ _V2_TO_V3_TABLES = [
 ]
 
 _V2_TO_V3_INDEXES = [
-    ("CREATE INDEX IF NOT EXISTS idx_theories_parent ON theories(parent_theory_id)", "idx_theories_parent"),
+    (
+        "CREATE INDEX IF NOT EXISTS idx_theories_parent ON theories(parent_theory_id)",
+        "idx_theories_parent",
+    ),
     ("CREATE INDEX IF NOT EXISTS idx_causal_cause ON causal_links(cause_text)", "idx_causal_cause"),
-    ("CREATE INDEX IF NOT EXISTS idx_causal_effect ON causal_links(effect_text)", "idx_causal_effect"),
-    ("CREATE INDEX IF NOT EXISTS idx_failures_project ON failure_records(project)", "idx_failures_project"),
-    ("CREATE INDEX IF NOT EXISTS idx_failures_category ON failure_records(category)", "idx_failures_category"),
+    (
+        "CREATE INDEX IF NOT EXISTS idx_causal_effect ON causal_links(effect_text)",
+        "idx_causal_effect",
+    ),
+    (
+        "CREATE INDEX IF NOT EXISTS idx_failures_project ON failure_records(project)",
+        "idx_failures_project",
+    ),
+    (
+        "CREATE INDEX IF NOT EXISTS idx_failures_category ON failure_records(category)",
+        "idx_failures_category",
+    ),
 ]
 
 # Migration v3→v4: junction tables and indexes
@@ -300,12 +312,30 @@ _V3_TO_V4_TABLES = [
 
 _V3_TO_V4_INDEXES = [
     ("CREATE INDEX IF NOT EXISTS idx_te_episode ON theory_episodes(episode_id)", "idx_te_episode"),
-    ("CREATE INDEX IF NOT EXISTS idx_tr_related ON theory_relations(related_theory_id)", "idx_tr_related"),
-    ("CREATE INDEX IF NOT EXISTS idx_cle_episode ON causal_link_episodes(episode_id)", "idx_cle_episode"),
-    ("CREATE INDEX IF NOT EXISTS idx_efp_pattern ON entity_fingerprints(pattern)", "idx_efp_pattern"),
-    ("CREATE INDEX IF NOT EXISTS idx_efp_entity ON entity_fingerprints(entity_id, entity_type)", "idx_efp_entity"),
-    ("CREATE INDEX IF NOT EXISTS idx_causal_project ON causal_links(project)", "idx_causal_project"),
-    ("CREATE INDEX IF NOT EXISTS idx_causal_cause_effect ON causal_links(cause_text, effect_text)", "idx_causal_cause_effect"),
+    (
+        "CREATE INDEX IF NOT EXISTS idx_tr_related ON theory_relations(related_theory_id)",
+        "idx_tr_related",
+    ),
+    (
+        "CREATE INDEX IF NOT EXISTS idx_cle_episode ON causal_link_episodes(episode_id)",
+        "idx_cle_episode",
+    ),
+    (
+        "CREATE INDEX IF NOT EXISTS idx_efp_pattern ON entity_fingerprints(pattern)",
+        "idx_efp_pattern",
+    ),
+    (
+        "CREATE INDEX IF NOT EXISTS idx_efp_entity ON entity_fingerprints(entity_id, entity_type)",
+        "idx_efp_entity",
+    ),
+    (
+        "CREATE INDEX IF NOT EXISTS idx_causal_project ON causal_links(project)",
+        "idx_causal_project",
+    ),
+    (
+        "CREATE INDEX IF NOT EXISTS idx_causal_cause_effect ON causal_links(cause_text, effect_text)",
+        "idx_causal_cause_effect",
+    ),
 ]
 
 # Migration v4→v5: normalized columns on causal_links for indexed dedup
@@ -429,9 +459,7 @@ class Database:
                 if not self._index_exists(conn, index_name):
                     conn.execute(create_stmt)
             self._backfill_v5_normalized_columns(conn)
-        conn.execute(
-            "UPDATE schema_version SET version = ?", (CURRENT_SCHEMA_VERSION,)
-        )
+        conn.execute("UPDATE schema_version SET version = ?", (CURRENT_SCHEMA_VERSION,))
 
     def _backfill_v4_junction_tables(self, conn: sqlite3.Connection) -> None:
         """Populate v4 junction tables from existing JSON columns."""
@@ -470,7 +498,9 @@ class Database:
                             (link_id, ep_id),
                         )
         # entity_fingerprints from episodes.structural_fingerprint and theories.structural_fingerprint
-        ep_rows = conn.execute("SELECT id, structural_fingerprint FROM episodes WHERE structural_fingerprint != ''").fetchall()
+        ep_rows = conn.execute(
+            "SELECT id, structural_fingerprint FROM episodes WHERE structural_fingerprint != ''"
+        ).fetchall()
         for row in ep_rows:
             fp = row["structural_fingerprint"]
             if fp:
@@ -481,7 +511,9 @@ class Database:
                             "INSERT OR IGNORE INTO entity_fingerprints (entity_id, entity_type, pattern) VALUES (?, ?, ?)",
                             (row["id"], "episode", pattern),
                         )
-        th_rows = conn.execute("SELECT id, structural_fingerprint FROM theories WHERE structural_fingerprint != ''").fetchall()
+        th_rows = conn.execute(
+            "SELECT id, structural_fingerprint FROM theories WHERE structural_fingerprint != ''"
+        ).fetchall()
         for row in th_rows:
             fp = row["structural_fingerprint"]
             if fp:
@@ -557,9 +589,7 @@ class Database:
             return None
         return self._row_to_session(row)
 
-    def list_sessions(
-        self, project: Optional[str] = None, limit: int = 20
-    ) -> list[Session]:
+    def list_sessions(self, project: Optional[str] = None, limit: int = 20) -> list[Session]:
         conn = self._get_conn()
         if project:
             rows = conn.execute(
@@ -730,9 +760,7 @@ class Database:
 
     def get_signals_for_episode(self, episode_id: str) -> list[Signal]:
         conn = self._get_conn()
-        rows = conn.execute(
-            "SELECT * FROM signals WHERE episode_id = ?", (episode_id,)
-        ).fetchall()
+        rows = conn.execute("SELECT * FROM signals WHERE episode_id = ?", (episode_id,)).fetchall()
         return [
             Signal(
                 id=r["id"],
@@ -983,9 +1011,7 @@ class Database:
                 (project,),
             ).fetchall()
         else:
-            rows = conn.execute(
-                "SELECT * FROM user_model ORDER BY familiarity DESC"
-            ).fetchall()
+            rows = conn.execute("SELECT * FROM user_model ORDER BY familiarity DESC").fetchall()
         return [
             UserKnowledge(
                 id=r["id"],
@@ -1240,7 +1266,9 @@ class Database:
         ).fetchall()
         return [r["episode_id"] for r in rows]
 
-    def set_entity_fingerprints(self, entity_id: str, entity_type: str, patterns: list[str]) -> None:
+    def set_entity_fingerprints(
+        self, entity_id: str, entity_type: str, patterns: list[str]
+    ) -> None:
         """Replace all fingerprint patterns for an entity."""
         with self._lock:
             conn = self._get_conn()
@@ -1265,7 +1293,9 @@ class Database:
         ).fetchall()
         return [r["pattern"] for r in rows]
 
-    def find_entities_by_fingerprint(self, pattern: str, entity_type: Optional[str] = None) -> list[dict[str, str]]:
+    def find_entities_by_fingerprint(
+        self, pattern: str, entity_type: Optional[str] = None
+    ) -> list[dict[str, str]]:
         """Find entities that have a specific fingerprint pattern."""
         conn = self._get_conn()
         if entity_type:
@@ -1285,8 +1315,13 @@ class Database:
     def list_all_entity_fingerprints(self) -> list[dict[str, str]]:
         """Return all rows from entity_fingerprints as dicts."""
         conn = self._get_conn()
-        rows = conn.execute("SELECT entity_id, entity_type, pattern FROM entity_fingerprints").fetchall()
-        return [{"entity_id": r["entity_id"], "entity_type": r["entity_type"], "pattern": r["pattern"]} for r in rows]
+        rows = conn.execute(
+            "SELECT entity_id, entity_type, pattern FROM entity_fingerprints"
+        ).fetchall()
+        return [
+            {"entity_id": r["entity_id"], "entity_type": r["entity_type"], "pattern": r["pattern"]}
+            for r in rows
+        ]
 
     def list_all_theory_episodes(self) -> list[dict[str, str]]:
         """Return all rows from theory_episodes as dicts."""
@@ -1298,18 +1333,24 @@ class Database:
         """Return all rows from theory_relations as dicts."""
         conn = self._get_conn()
         rows = conn.execute("SELECT theory_id, related_theory_id FROM theory_relations").fetchall()
-        return [{"theory_id": r["theory_id"], "related_theory_id": r["related_theory_id"]} for r in rows]
+        return [
+            {"theory_id": r["theory_id"], "related_theory_id": r["related_theory_id"]} for r in rows
+        ]
 
     def list_all_causal_link_episodes(self) -> list[dict[str, Any]]:
         """Return all rows from causal_link_episodes as dicts."""
         conn = self._get_conn()
-        rows = conn.execute("SELECT causal_link_id, episode_id FROM causal_link_episodes").fetchall()
-        return [{"causal_link_id": r["causal_link_id"], "episode_id": r["episode_id"]} for r in rows]
+        rows = conn.execute(
+            "SELECT causal_link_id, episode_id FROM causal_link_episodes"
+        ).fetchall()
+        return [
+            {"causal_link_id": r["causal_link_id"], "episode_id": r["episode_id"]} for r in rows
+        ]
 
     @staticmethod
     def _normalize_text(text: str) -> str:
         """Normalize text for case/whitespace-insensitive comparison."""
-        return re.sub(r'\s+', ' ', text.strip().lower())
+        return re.sub(r"\s+", " ", text.strip().lower())
 
     def list_causal_links_normalized(
         self, cause_text: str, effect_text: str, limit: int = 5

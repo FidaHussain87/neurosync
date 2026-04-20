@@ -9,19 +9,21 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 # Architecture layers for DEPTH signal
-KNOWN_LAYERS = frozenset({
-    "inventory",
-    "dao",
-    "service",
-    "ismr",
-    "ism",
-    "extcomm",
-    "scanner",
-    "endpoint",
-    "ui",
-    "config",
-    "test",
-})
+KNOWN_LAYERS = frozenset(
+    {
+        "inventory",
+        "dao",
+        "service",
+        "ismr",
+        "ism",
+        "extcomm",
+        "scanner",
+        "endpoint",
+        "ui",
+        "config",
+        "test",
+    }
+)
 
 
 @dataclass

@@ -14,7 +14,10 @@ from neurosync.vectorstore import VectorStore
 _MECHANISM_KEYWORDS: dict[str, list[re.Pattern[str]]] = {
     "preventing": [re.compile(r"prevent", re.IGNORECASE), re.compile(r"block", re.IGNORECASE)],
     "enabling": [re.compile(r"enabl", re.IGNORECASE), re.compile(r"allow", re.IGNORECASE)],
-    "triggering": [re.compile(r"trigger", re.IGNORECASE), re.compile(r"caus(?:e[sd]?|ing)", re.IGNORECASE)],
+    "triggering": [
+        re.compile(r"trigger", re.IGNORECASE),
+        re.compile(r"caus(?:e[sd]?|ing)", re.IGNORECASE),
+    ],
     "modulating": [re.compile(r"modulat", re.IGNORECASE), re.compile(r"amplif", re.IGNORECASE)],
     "correlating": [re.compile(r"correlat", re.IGNORECASE), re.compile(r"associat", re.IGNORECASE)],
 }
@@ -91,12 +94,14 @@ class CausalGraph:
         """
         # Fast path: exact match
         existing = self._db.list_causal_links(
-            cause_text=link.cause_text, effect_text=link.effect_text,
+            cause_text=link.cause_text,
+            effect_text=link.effect_text,
         )
         # Fallback: normalized match (case-insensitive, whitespace-tolerant)
         if not existing:
             existing = self._db.list_causal_links_normalized(
-                link.cause_text, link.effect_text,
+                link.cause_text,
+                link.effect_text,
             )
         if existing:
             dup = existing[0]
@@ -135,7 +140,10 @@ class CausalGraph:
     # --- Forward/backward queries ---
 
     def get_effects_of(
-        self, cause_text: str, max_depth: int = 1, project: Optional[str] = None,
+        self,
+        cause_text: str,
+        max_depth: int = 1,
+        project: Optional[str] = None,
     ) -> list[CausalLink]:
         """Get direct (and optionally transitive) effects of a cause."""
         results: list[CausalLink] = []
@@ -156,7 +164,10 @@ class CausalGraph:
         return results
 
     def get_causes_of(
-        self, effect_text: str, max_depth: int = 1, project: Optional[str] = None,
+        self,
+        effect_text: str,
+        max_depth: int = 1,
+        project: Optional[str] = None,
     ) -> list[CausalLink]:
         """Get direct (and optionally transitive) causes of an effect."""
         results: list[CausalLink] = []
@@ -177,7 +188,11 @@ class CausalGraph:
         return results
 
     def get_causal_chain(
-        self, start: str, end: str, max_depth: int = 5, project: Optional[str] = None,
+        self,
+        start: str,
+        end: str,
+        max_depth: int = 5,
+        project: Optional[str] = None,
     ) -> Optional[list[CausalLink]]:
         """Find a causal chain from start to end using BFS."""
         queue: deque[tuple[str, list[CausalLink]]] = deque([(start, [])])
@@ -199,7 +214,10 @@ class CausalGraph:
         return None
 
     def get_causal_neighborhood(
-        self, text: str, radius: int = 2, project: Optional[str] = None,
+        self,
+        text: str,
+        radius: int = 2,
+        project: Optional[str] = None,
     ) -> dict[str, Any]:
         """Get upstream causes + downstream effects + links around a concept.
 
@@ -244,7 +262,10 @@ class CausalGraph:
         }
 
     def _semantic_causal_search(
-        self, query: str, project: Optional[str] = None, n_results: int = 5,
+        self,
+        query: str,
+        project: Optional[str] = None,
+        n_results: int = 5,
     ) -> list[CausalLink]:
         """Find causal links whose cause or effect text is semantically similar to query."""
         if not self._vs:
@@ -262,7 +283,9 @@ class CausalGraph:
                 continue
             # Find matching causal link
             links = self._db.list_causal_links(
-                cause_text=episode.cause, effect_text=episode.effect, project=project,
+                cause_text=episode.cause,
+                effect_text=episode.effect,
+                project=project,
             )
             for link in links:
                 if link.id not in seen_ids:
@@ -317,11 +340,7 @@ class CausalGraph:
                     cause_counts[link.cause_text] += 1
                     cause_links[link.cause_text] = link
         # Return causes shared by 2+ effects
-        return [
-            cause_links[cause]
-            for cause, count in cause_counts.items()
-            if count >= 2
-        ]
+        return [cause_links[cause] for cause, count in cause_counts.items() if count >= 2]
 
     # --- Batch construction ---
 

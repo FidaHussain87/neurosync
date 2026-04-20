@@ -133,12 +133,14 @@ class FailureModel:
             if result.get("distance", 1.0) > threshold:
                 continue
             meta = result.get("metadata", {})
-            warnings.append({
-                "warning": result.get("document", ""),
-                "what_worked": meta.get("what_worked", ""),
-                "severity": meta.get("severity", 3),
-                "distance": result.get("distance", 0.0),
-            })
+            warnings.append(
+                {
+                    "warning": result.get("document", ""),
+                    "what_worked": meta.get("what_worked", ""),
+                    "severity": meta.get("severity", 3),
+                    "distance": result.get("distance", 0.0),
+                }
+            )
         return warnings
 
     def get_anti_patterns(
@@ -148,7 +150,9 @@ class FailureModel:
         min_severity: int = 1,
     ) -> list[FailureRecord]:
         return self._db.list_failure_records(
-            project=project, category=category, min_severity=min_severity,
+            project=project,
+            category=category,
+            min_severity=min_severity,
         )
 
     def search_failures(self, query: str, n_results: int = 5) -> list[dict[str, Any]]:

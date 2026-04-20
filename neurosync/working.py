@@ -139,12 +139,14 @@ class WorkingMemory:
                 cost = estimate_tokens(ep.get("document", ""))
                 if tokens_used + cost > max_tokens:
                     break
-                recent_episodes.append({
-                    "id": ep["id"],
-                    "content": ep.get("document", ""),
-                    "event_type": ep.get("metadata", {}).get("event_type", ""),
-                    "distance": ep.get("distance", 0.0),
-                })
+                recent_episodes.append(
+                    {
+                        "id": ep["id"],
+                        "content": ep.get("document", ""),
+                        "event_type": ep.get("metadata", {}).get("event_type", ""),
+                        "distance": ep.get("distance", 0.0),
+                    }
+                )
                 tokens_used += cost
 
         return {

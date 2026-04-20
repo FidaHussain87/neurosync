@@ -1,42 +1,60 @@
 ## Summary
 
-<!-- What does this PR do? 1-3 sentences. -->
+<!-- What does this PR do and why? Keep it to 1-3 sentences. -->
 
-## Related issue
+## Related Issue
 
-<!-- Link the issue: Fixes #123, Closes #456, or "N/A" if none. -->
+<!-- REQUIRED — CI will fail without this.
+     Link the issue: "Fixes #123", "Closes #456", or "Resolves #789"
+     For trivial PRs without an issue: "Related issue: N/A" -->
 
-## Type of change
+Fixes #
 
-<!-- Check the ones that apply: -->
+## Type of Change
 
 - [ ] Bug fix (non-breaking change that fixes an issue)
 - [ ] New feature (non-breaking change that adds functionality)
-- [ ] Breaking change (fix or feature that would cause existing functionality to change)
-- [ ] Documentation update
+- [ ] Breaking change (existing functionality would change)
+- [ ] Performance improvement
 - [ ] Refactoring (no functional changes)
+- [ ] Documentation update
 - [ ] Test improvement (no production code changes)
+- [ ] CI / build / tooling
 
 ## Changes
 
-<!-- Bullet list of what changed and why. -->
+<!-- Focus on the "why" — the diff shows the "what". -->
 
 -
 
-## How to test
+## How to Test
 
-<!-- Steps for reviewers to verify. -->
+<!-- Concrete steps a reviewer can follow to verify. Include commands. -->
 
 1.
 2.
 3.
 
+## Screenshots / Logs
+
+<!-- If applicable — UI changes, CLI output, error messages. Delete this section if not needed. -->
+
 ## Checklist
 
-- [ ] Tests pass locally: `pytest --cov=neurosync -v`
-- [ ] Lint passes: `ruff check neurosync/`
+### Required (CI-enforced)
+
+- [ ] All tests pass — `pytest --cov=neurosync -v`
+- [ ] Lint clean — `ruff check neurosync/` and `ruff format --check neurosync/`
 - [ ] Coverage >= 85%
+- [ ] PR title is 10-72 characters
+- [ ] PR body references an issue (or states `Related issue: N/A`)
+- [ ] PR description is filled out (not just the template placeholders)
+
+### If applicable
+
 - [ ] New code has tests
-- [ ] No new dependencies added (or discussed in issue first)
-- [ ] `CLAUDE.md` updated if architecture or tool behavior changed
-- [ ] Commit messages follow [conventional format](#commit-messages)
+- [ ] Frontend builds — `cd frontend && npm run typecheck && npm run build`
+- [ ] `CLAUDE.md` updated (if architecture or tool behavior changed)
+- [ ] `docs/` updated (if user-facing behavior changed)
+- [ ] No new dependencies added (or discussed in the linked issue first)
+- [ ] Commit messages follow [conventional format](CONTRIBUTING.md#commit-messages)

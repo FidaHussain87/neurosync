@@ -468,29 +468,51 @@ Create `~/.neurosync/config.json` for fine-tuning:
 
 By default, NeuroSync uses SQLite — zero setup, perfect for single-developer use. For production deployments or when you want a more robust database, you can switch to PostgreSQL.
 
-### Install the PostgreSQL driver
+### Install the driver
 
 ```bash
 pip install neurosync[postgresql]
+# or directly:
+pip install psycopg2-binary
 ```
 
-### Start PostgreSQL (if not running)
+### Local PostgreSQL (Homebrew / pgAdmin / Postgres.app)
+
+If PostgreSQL is already installed locally:
+
+```bash
+# Create the database
+createdb neurosync
+
+# Add to ~/.zshrc or ~/.bashrc
+export NEUROSYNC_DB_BACKEND="postgresql"
+export NEUROSYNC_PG_DSN="postgresql://yourusername@localhost:5432/neurosync"
+```
+
+Replace `yourusername` with your system username (`whoami`). Add `:yourpassword` after the username if your PostgreSQL requires a password.
+
+### Docker
 
 ```bash
 docker run -d --name neurosync-pg -p 5432:5432 \
   -e POSTGRES_DB=neurosync -e POSTGRES_PASSWORD=neurosync postgres:16
-```
 
-### Configure NeuroSync to use PostgreSQL
-
-```bash
 export NEUROSYNC_DB_BACKEND="postgresql"
 export NEUROSYNC_PG_DSN="postgresql://postgres:neurosync@localhost:5432/neurosync"
 ```
 
-NeuroSync automatically creates all tables on first connection. If PostgreSQL is unreachable, it falls back to SQLite.
+### Verify
 
-> **Security note:** The PostgreSQL connection string (`NEUROSYNC_PG_DSN`) is only read from environment variables, never from `config.json`. This prevents accidental commits of credentials.
+```bash
+source ~/.zshrc
+neurosync status    # should show "healthy": true
+```
+
+NeuroSync automatically creates all 13 tables on first connection. If PostgreSQL is unreachable, it falls back to SQLite with a warning.
+
+> **Security note:** `NEUROSYNC_PG_DSN` is only read from environment variables, never from `config.json`. This prevents accidental commits of credentials.
+
+See [docs/setup.md](docs/setup.md#postgresql-backend-optional) for the full setup guide.
 
 ---
 

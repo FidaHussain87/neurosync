@@ -184,12 +184,14 @@ class VectorStore:
         self._failures.upsert(
             ids=[record_id],
             documents=[self._safe_document(content)],
-            metadatas=[{
-                "category": record.category,
-                "project": record.project,
-                "severity": record.severity,
-                "what_worked": record.what_worked,
-            }],
+            metadatas=[
+                {
+                    "category": record.category,
+                    "project": record.project,
+                    "severity": record.severity,
+                    "what_worked": record.what_worked,
+                }
+            ],
         )
 
     def search_failures(
@@ -234,12 +236,14 @@ class VectorStore:
         distances = results.get("distances", [[]])[0]
         metadatas = results.get("metadatas", [[]])[0]
         for i, doc_id in enumerate(ids):
-            items.append({
-                "id": doc_id,
-                "document": documents[i] if i < len(documents) else "",
-                "distance": distances[i] if i < len(distances) else 0.0,
-                "metadata": metadatas[i] if i < len(metadatas) else {},
-            })
+            items.append(
+                {
+                    "id": doc_id,
+                    "document": documents[i] if i < len(documents) else "",
+                    "distance": distances[i] if i < len(distances) else 0.0,
+                    "metadata": metadatas[i] if i < len(metadatas) else {},
+                }
+            )
         return items
 
     def stats(self) -> dict[str, int]:

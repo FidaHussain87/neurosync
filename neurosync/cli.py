@@ -13,6 +13,7 @@ from neurosync.version import __version__
 def cmd_serve(args: argparse.Namespace) -> None:
     """Start the MCP server on stdio."""
     from neurosync.mcp_server import serve
+
     serve()
 
 
@@ -25,6 +26,7 @@ def cmd_status(args: argparse.Namespace) -> None:
 
     try:
         from neurosync.db import Database
+
         db = Database(config)
         status["database"] = db.stats()
         status["database"]["healthy"] = True
@@ -34,6 +36,7 @@ def cmd_status(args: argparse.Namespace) -> None:
 
     try:
         from neurosync.vectorstore import VectorStore
+
         vs = VectorStore(config)
         status["vectorstore"] = vs.stats()
         status["vectorstore"]["healthy"] = True
@@ -42,6 +45,7 @@ def cmd_status(args: argparse.Namespace) -> None:
 
     try:
         from neurosync.graph import GraphStore
+
         gs = GraphStore(config)
         status["graph"] = gs.stats()
         status["graph"]["healthy"] = True
@@ -111,6 +115,7 @@ def cmd_reset(args: argparse.Namespace) -> None:
 
     try:
         from neurosync.vectorstore import VectorStore
+
         vs = VectorStore(config)
         vs.reset()
         print("ChromaDB collections reset.")
@@ -133,6 +138,7 @@ def cmd_graph_sync(args: argparse.Namespace) -> None:
     db = Database(config)
     try:
         from neurosync.graph import GraphStore
+
         gs = GraphStore(config)
         try:
             result = gs.sync(db, project=args.project)
@@ -140,7 +146,9 @@ def cmd_graph_sync(args: argparse.Namespace) -> None:
         finally:
             gs.close()
     except ImportError:
-        print(json.dumps({"error": "Neo4j driver not installed. Run: pip install neurosync[neo4j]"}))
+        print(
+            json.dumps({"error": "Neo4j driver not installed. Run: pip install neurosync[neo4j]"})
+        )
         sys.exit(1)
     except Exception as e:
         print(json.dumps({"error": f"Cannot connect to Neo4j: {e}"}))
@@ -156,6 +164,7 @@ def cmd_graph_status(args: argparse.Namespace) -> None:
     config = NeuroSyncConfig.load()
     try:
         from neurosync.graph import GraphStore
+
         gs = GraphStore(config)
         stats = gs.stats()
         stats["healthy"] = True
@@ -235,7 +244,8 @@ def main() -> None:
 
     # generate-protocol
     p_protocol = subparsers.add_parser(
-        "generate-protocol", help="Output minimal NeuroSync protocol for CLAUDE.md",
+        "generate-protocol",
+        help="Output minimal NeuroSync protocol for CLAUDE.md",
     )
     p_protocol.add_argument("--project", default=None, help="Project name for full CLAUDE.md")
 

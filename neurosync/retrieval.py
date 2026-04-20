@@ -122,12 +122,14 @@ class RetrievalPipeline:
                 cost = estimate_tokens(ep.get("document", ""))
                 if tokens_used + cost > max_tokens:
                     break
-                recent.append({
-                    "id": ep["id"],
-                    "content": ep.get("document", ""),
-                    "event_type": ep.get("metadata", {}).get("event_type", ""),
-                    "distance": ep.get("distance", 0.0),
-                })
+                recent.append(
+                    {
+                        "id": ep["id"],
+                        "content": ep.get("document", ""),
+                        "event_type": ep.get("metadata", {}).get("event_type", ""),
+                        "distance": ep.get("distance", 0.0),
+                    }
+                )
                 tokens_used += cost
 
         return {
@@ -155,8 +157,7 @@ class RetrievalPipeline:
         if primary:
             status = primary.get("validation_status", "unvalidated")
             parts.append(
-                f"## Primary Insight (confidence: {primary['confidence']:.0%}, "
-                f"status: {status})"
+                f"## Primary Insight (confidence: {primary['confidence']:.0%}, status: {status})"
             )
             parts.append(primary["content"])
             parts.append("")

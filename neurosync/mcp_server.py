@@ -110,10 +110,20 @@ TOOLS = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "project": {"type": "string", "description": "Project name (auto-detected from git if omitted)"},
-                "branch": {"type": "string", "description": "Branch name (auto-detected from git if omitted)"},
+                "project": {
+                    "type": "string",
+                    "description": "Project name (auto-detected from git if omitted)",
+                },
+                "branch": {
+                    "type": "string",
+                    "description": "Branch name (auto-detected from git if omitted)",
+                },
                 "context": {"type": "string", "description": "Additional context for retrieval"},
-                "max_tokens": {"type": "integer", "description": "Max output tokens (default 500)", "default": 500},
+                "max_tokens": {
+                    "type": "integer",
+                    "description": "Max output tokens (default 500)",
+                    "default": 500,
+                },
             },
         },
     },
@@ -137,7 +147,10 @@ TOOLS = [
                             "files": {"type": "array", "items": {"type": "string"}},
                             "layers": {"type": "array", "items": {"type": "string"}},
                             "cause": {"type": "string", "description": "What triggered this event"},
-                            "effect": {"type": "string", "description": "What resulted from this event"},
+                            "effect": {
+                                "type": "string",
+                                "description": "What resulted from this event",
+                            },
                             "reasoning": {"type": "string", "description": "Why this happened"},
                             "importance": {
                                 "type": "integer",
@@ -173,7 +186,11 @@ TOOLS = [
             "type": "object",
             "properties": {
                 "content": {"type": "string", "description": "What to remember"},
-                "type": {"type": "string", "description": "Event type (default: explicit)", "default": "explicit"},
+                "type": {
+                    "type": "string",
+                    "description": "Event type (default: explicit)",
+                    "default": "explicit",
+                },
                 "cause": {"type": "string", "description": "What triggered this memory"},
                 "effect": {"type": "string", "description": "What resulted"},
                 "reasoning": {"type": "string", "description": "Why this matters"},
@@ -194,7 +211,11 @@ TOOLS = [
             "type": "object",
             "properties": {
                 "query": {"type": "string", "description": "Search query"},
-                "scope": {"type": "string", "enum": ["all", "episodes", "theories"], "default": "all"},
+                "scope": {
+                    "type": "string",
+                    "enum": ["all", "episodes", "theories"],
+                    "default": "all",
+                },
                 "mode": {
                     "type": "string",
                     "enum": ["semantic", "analogy", "causal", "failures"],
@@ -279,9 +300,15 @@ TOOLS = [
             "type": "object",
             "properties": {
                 "goal": {"type": "string", "description": "Overall goal of the task"},
-                "accomplished": {"type": "string", "description": "What was accomplished this session"},
+                "accomplished": {
+                    "type": "string",
+                    "description": "What was accomplished this session",
+                },
                 "remaining": {"type": "string", "description": "What still needs to be done"},
-                "next_step": {"type": "string", "description": "Concrete next step for the next session"},
+                "next_step": {
+                    "type": "string",
+                    "description": "Concrete next step for the next session",
+                },
                 "blockers": {"type": "string", "description": "Any blockers or open questions"},
             },
             "required": ["goal", "accomplished", "remaining", "next_step"],
@@ -329,6 +356,7 @@ TOOLS = [
 # Server state
 # ---------------------------------------------------------------------------
 
+
 def _require_init(*components: Any) -> None:
     """Raise RuntimeError if any server component is None (not yet initialized)."""
     for comp in components:
@@ -373,6 +401,7 @@ def _init() -> None:
     if config.db_backend == "postgresql":
         try:
             from neurosync.pg_db import PostgresDatabase
+
             db = PostgresDatabase(config)
             logger.info("Using PostgreSQL backend")
         except ImportError:
@@ -389,7 +418,9 @@ def _init() -> None:
     try:
         vs = VectorStore(config)
     except Exception:
-        logger.warning("ChromaDB unavailable, running in degraded mode (no vector search)", exc_info=True)
+        logger.warning(
+            "ChromaDB unavailable, running in degraded mode (no vector search)", exc_info=True
+        )
 
     # Build engines — they accept Optional[VectorStore]
     episodic = EpisodicMemory(db, vs)
@@ -445,6 +476,7 @@ def _get_graph():
         return _graph
     try:
         from neurosync.graph import GraphStore
+
         _graph = GraphStore(_config)
         return _graph
     except ImportError:
@@ -461,7 +493,10 @@ def _try_auto_consolidate() -> Optional[dict]:
     """Run auto-consolidation if enabled and threshold is met. Returns result or None."""
     if _config and _config.auto_consolidation_enabled and _db and _vs and _episodic and _semantic:
         result = maybe_consolidate(
-            _db, _vs, _episodic, _semantic,
+            _db,
+            _vs,
+            _episodic,
+            _semantic,
             threshold=_config.auto_consolidation_threshold,
             min_episodes=_config.consolidation_min_episodes,
         )
@@ -591,7 +626,9 @@ def handle_record(params: dict[str, Any]) -> dict[str, Any]:
         # Track user exposure when they explain something
         if _user_model and project and content.strip():
             _user_model.record_exposure(
-                topic=content[:100], project=project, explained=True,
+                topic=content[:100],
+                project=project,
+                explained=True,
             )
         # Check quality
         if episode.quality_score is not None:
@@ -646,21 +683,42 @@ def _has_contradiction_language(text: str) -> bool:
     """
     # Strong indicators: phrases that strongly imply contradiction
     strong_markers = (
-        "but actually", "not true", "this is wrong", "was wrong",
-        "is incorrect", "was incorrect", "doesn't work", "didn't work",
-        "this is broken", "was broken", "should not have",
-        "contrary to", "opposite of", "contradicts",
-        "that's a mistake", "was a mistake", "corrected to",
-        "the correct approach", "the right way", "not actually",
+        "but actually",
+        "not true",
+        "this is wrong",
+        "was wrong",
+        "is incorrect",
+        "was incorrect",
+        "doesn't work",
+        "didn't work",
+        "this is broken",
+        "was broken",
+        "should not have",
+        "contrary to",
+        "opposite of",
+        "contradicts",
+        "that's a mistake",
+        "was a mistake",
+        "corrected to",
+        "the correct approach",
+        "the right way",
+        "not actually",
     )
     text_lower = text.lower()
     if any(m in text_lower for m in strong_markers):
         return True
     # Require at least 2 weak indicators to trigger (co-occurrence reduces false positives)
     weak_markers = (
-        "actually", "incorrect", "wrong", "mistake",
-        "corrected", "instead", "rather", "however",
-        "contrary", "broken",
+        "actually",
+        "incorrect",
+        "wrong",
+        "mistake",
+        "corrected",
+        "instead",
+        "rather",
+        "however",
+        "contrary",
+        "broken",
     )
     weak_count = sum(1 for m in weak_markers if m in text_lower)
     return weak_count >= 2
@@ -683,10 +741,7 @@ def _apply_outcome_confidence_adjustment() -> None:
                 continue
             # Only penalize if the theory's content is relevant to a correction topic
             theory_lower = theory.content.lower()
-            relevant = any(
-                _topic_overlap(topic, theory_lower)
-                for topic in _correction_topics
-            )
+            relevant = any(_topic_overlap(topic, theory_lower) for topic in _correction_topics)
             if relevant:
                 theory.confidence = max(0.05, theory.confidence - penalty)
                 _db.save_theory(theory)
@@ -767,7 +822,11 @@ def handle_query(params: dict[str, Any]) -> dict[str, Any]:
 
     if mode == "analogy":
         if not _analogy:
-            return {"mode": "analogy", "results": [], "warning": "Analogy engine unavailable (no vector search)"}
+            return {
+                "mode": "analogy",
+                "results": [],
+                "warning": "Analogy engine unavailable (no vector search)",
+            }
         analogies = _analogy.find_analogies(query, n_results=limit)
         return {"mode": "analogy", "results": analogies}
 
@@ -966,6 +1025,7 @@ def handle_consolidate(params: dict[str, Any]) -> dict[str, Any]:
         }
     try:
         from neurosync.consolidation import ConsolidationEngine
+
         engine = ConsolidationEngine(_db, _vs, _episodic, _semantic)
         result = engine.run(project=params.get("project"), dry_run=False)
         # Run forgetting pass after manual consolidation
@@ -1001,11 +1061,14 @@ def handle_handoff(params: dict[str, Any]) -> dict[str, Any]:
         next_step=next_step,
         blockers=blockers,
     )
-    return _add_protocol_hint("neurosync_handoff", {
-        "episode_id": episode.id,
-        "signal_weight": episode.signal_weight,
-        "message": "Handoff recorded. Next session will see this as continuation context.",
-    })
+    return _add_protocol_hint(
+        "neurosync_handoff",
+        {
+            "episode_id": episode.id,
+            "signal_weight": episode.signal_weight,
+            "message": "Handoff recorded. Next session will see this as continuation context.",
+        },
+    )
 
 
 def handle_graph(params: dict[str, Any]) -> dict[str, Any]:
@@ -1033,9 +1096,7 @@ def handle_graph(params: dict[str, Any]) -> dict[str, Any]:
             # Return catalog
             catalog = graph.get_prebuilt_queries()
             return {
-                "queries": {
-                    name: info["description"] for name, info in catalog.items()
-                },
+                "queries": {name: info["description"] for name, info in catalog.items()},
             }
         catalog = graph.get_prebuilt_queries()
         if prebuilt_name not in catalog:
@@ -1116,14 +1177,17 @@ def _handle_request(request: dict[str, Any]) -> Optional[dict[str, Any]]:
     params = request.get("params", {})
 
     if method == "initialize":
-        return _success_response(req_id, {
-            "protocolVersion": "2024-11-05",
-            "capabilities": {"tools": {}},
-            "serverInfo": {
-                "name": "neurosync",
-                "version": __version__,
+        return _success_response(
+            req_id,
+            {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {"tools": {}},
+                "serverInfo": {
+                    "name": "neurosync",
+                    "version": __version__,
+                },
             },
-        })
+        )
 
     if method == "notifications/initialized":
         return None  # Notification, no response
@@ -1140,16 +1204,22 @@ def _handle_request(request: dict[str, Any]) -> Optional[dict[str, Any]]:
         try:
             _init()
             result = handler(tool_args)
-            return _success_response(req_id, {
-                "content": [{"type": "text", "text": json.dumps(result, indent=2)}],
-            })
+            return _success_response(
+                req_id,
+                {
+                    "content": [{"type": "text", "text": json.dumps(result, indent=2)}],
+                },
+            )
         except Exception as e:
             tb = traceback.format_exc()
             logger.error("Error in %s: %s", tool_name, tb)
-            return _success_response(req_id, {
-                "content": [{"type": "text", "text": json.dumps({"error": str(e)})}],
-                "isError": True,
-            })
+            return _success_response(
+                req_id,
+                {
+                    "content": [{"type": "text", "text": json.dumps({"error": str(e)})}],
+                    "isError": True,
+                },
+            )
 
     if method == "ping":
         return _success_response(req_id, {})

@@ -18,7 +18,9 @@ class UserModel:
     def __init__(self, db: Database) -> None:
         self._db = db
 
-    def record_exposure(self, topic: str, project: str = "", explained: bool = False) -> UserKnowledge:
+    def record_exposure(
+        self, topic: str, project: str = "", explained: bool = False
+    ) -> UserKnowledge:
         """Record that the user was exposed to a topic."""
         uk = self._db.get_user_knowledge(topic, project)
         if uk is None:
@@ -64,7 +66,9 @@ class UserModel:
             return 0.0
         return uk.familiarity
 
-    def get_familiar_topics(self, threshold: float = 0.9, project: Optional[str] = None) -> set[str]:
+    def get_familiar_topics(
+        self, threshold: float = 0.9, project: Optional[str] = None
+    ) -> set[str]:
         """Get topics where user familiarity exceeds threshold."""
         all_knowledge = self._db.list_user_knowledge(project=project)
         return {uk.topic for uk in all_knowledge if uk.familiarity >= threshold}

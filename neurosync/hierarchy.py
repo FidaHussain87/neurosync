@@ -66,8 +66,7 @@ class TheoryHierarchy:
         if depth < max_depth:
             children = self._db.list_children_of_theory(theory.id)
             node["children"] = [
-                self._build_subtree(child, depth + 1, max_depth)
-                for child in children
+                self._build_subtree(child, depth + 1, max_depth) for child in children
             ]
         else:
             node["children"] = []
@@ -100,8 +99,10 @@ class TheoryHierarchy:
             if not candidate or not candidate.active:
                 continue
             # Parent should be broader: more source episodes or higher confirmation
-            if (len(candidate.source_episodes) > len(theory.source_episodes)
-                    and candidate.confirmation_count >= theory.confirmation_count):
+            if (
+                len(candidate.source_episodes) > len(theory.source_episodes)
+                and candidate.confirmation_count >= theory.confirmation_count
+            ):
                 return candidate
         return None
 
@@ -178,9 +179,7 @@ class TheoryHierarchy:
             self._db.add_theory_episode(survivor.id, ep_id)
         return survivor
 
-    def detect_merge_candidates(
-        self, distance_threshold: float = 0.15
-    ) -> list[tuple[str, str]]:
+    def detect_merge_candidates(self, distance_threshold: float = 0.15) -> list[tuple[str, str]]:
         """Find pairs of theories that are near-duplicates."""
         if not self._vs:
             return []

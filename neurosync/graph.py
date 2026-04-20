@@ -166,7 +166,9 @@ PREBUILT_QUERIES: dict[str, dict[str, str]] = {
 }
 
 # Write keywords that are blocked in user queries for safety
-_WRITE_KEYWORDS = frozenset({"CREATE", "DELETE", "DETACH", "SET", "REMOVE", "MERGE", "DROP", "FOREACH"})
+_WRITE_KEYWORDS = frozenset(
+    {"CREATE", "DELETE", "DETACH", "SET", "REMOVE", "MERGE", "DROP", "FOREACH"}
+)
 
 
 def _is_write_query(cypher: str) -> bool:
@@ -185,7 +187,7 @@ def _is_write_query(cypher: str) -> bool:
                 return True
             idx += 1
     # Check for CALL ... IN TRANSACTIONS pattern
-    return bool(re.search(r'\bCALL\b.*\bIN\s+TRANSACTIONS\b', upper))
+    return bool(re.search(r"\bCALL\b.*\bIN\s+TRANSACTIONS\b", upper))
 
 
 class GraphStore:
@@ -200,7 +202,9 @@ class GraphStore:
             raise ImportError(
                 "Neo4j driver not installed. Install with: pip install neurosync[neo4j]"
             )
-        auth = basic_auth(config.neo4j_user, config.neo4j_password) if config.neo4j_password else None
+        auth = (
+            basic_auth(config.neo4j_user, config.neo4j_password) if config.neo4j_password else None
+        )
         self._driver = GraphDatabase.driver(config.neo4j_uri, auth=auth)
         self._database = config.neo4j_database or None
         # Verify connectivity
@@ -245,34 +249,62 @@ class GraphStore:
         if project:
             sessions = db.list_sessions(project=project, limit=SYNC_LIMIT)
             if len(sessions) >= SYNC_LIMIT:
-                logger.warning("Sync limit reached for %s (%d items). Some data may be missing.", "sessions", SYNC_LIMIT)
+                logger.warning(
+                    "Sync limit reached for %s (%d items). Some data may be missing.",
+                    "sessions",
+                    SYNC_LIMIT,
+                )
             episodes = []
             for s in sessions:
                 episodes.extend(db.list_episodes(session_id=s.id, limit=SYNC_LIMIT))
         else:
             sessions = db.list_sessions(limit=SYNC_LIMIT)
             if len(sessions) >= SYNC_LIMIT:
-                logger.warning("Sync limit reached for %s (%d items). Some data may be missing.", "sessions", SYNC_LIMIT)
+                logger.warning(
+                    "Sync limit reached for %s (%d items). Some data may be missing.",
+                    "sessions",
+                    SYNC_LIMIT,
+                )
             episodes = db.list_episodes(limit=SYNC_LIMIT)
             if len(episodes) >= SYNC_LIMIT:
-                logger.warning("Sync limit reached for %s (%d items). Some data may be missing.", "episodes", SYNC_LIMIT)
+                logger.warning(
+                    "Sync limit reached for %s (%d items). Some data may be missing.",
+                    "episodes",
+                    SYNC_LIMIT,
+                )
 
         theories = db.list_theories(active_only=False, project=project, limit=SYNC_LIMIT)
         if len(theories) >= SYNC_LIMIT:
-            logger.warning("Sync limit reached for %s (%d items). Some data may be missing.", "theories", SYNC_LIMIT)
+            logger.warning(
+                "Sync limit reached for %s (%d items). Some data may be missing.",
+                "theories",
+                SYNC_LIMIT,
+            )
 
         contradictions = db.list_contradictions(limit=SYNC_LIMIT)
         if len(contradictions) >= SYNC_LIMIT:
-            logger.warning("Sync limit reached for %s (%d items). Some data may be missing.", "contradictions", SYNC_LIMIT)
+            logger.warning(
+                "Sync limit reached for %s (%d items). Some data may be missing.",
+                "contradictions",
+                SYNC_LIMIT,
+            )
 
         causal_links = db.list_causal_links(project=project, limit=SYNC_LIMIT)
         if len(causal_links) >= SYNC_LIMIT:
-            logger.warning("Sync limit reached for %s (%d items). Some data may be missing.", "causal_links", SYNC_LIMIT)
+            logger.warning(
+                "Sync limit reached for %s (%d items). Some data may be missing.",
+                "causal_links",
+                SYNC_LIMIT,
+            )
         causal_links_by_id = {link.id: link for link in causal_links}
 
         failure_records = db.list_failure_records(project=project, min_severity=1, limit=SYNC_LIMIT)
         if len(failure_records) >= SYNC_LIMIT:
-            logger.warning("Sync limit reached for %s (%d items). Some data may be missing.", "failure_records", SYNC_LIMIT)
+            logger.warning(
+                "Sync limit reached for %s (%d items). Some data may be missing.",
+                "failure_records",
+                SYNC_LIMIT,
+            )
 
         entity_fingerprints = db.list_all_entity_fingerprints()
 
@@ -301,7 +333,10 @@ class GraphStore:
 
         # --- Cleanup stale data ---
         stats["cleaned"] = self._cleanup_stale(
-            sessions=sessions, episodes=episodes, theories=theories, project=project,
+            sessions=sessions,
+            episodes=episodes,
+            theories=theories,
+            project=project,
         )
 
         logger.info("Graph sync completed: %s", stats)
@@ -435,9 +470,7 @@ class GraphStore:
         if not rows:
             return 0
         cypher = (
-            "UNWIND $batch AS row "
-            "MERGE (c:Concept {text: row.text}) "
-            "SET c.projects = row.projects"
+            "UNWIND $batch AS row MERGE (c:Concept {text: row.text}) SET c.projects = row.projects"
         )
         return self._run_batched(cypher, rows)
 
@@ -575,11 +608,7 @@ class GraphStore:
         return self._run_batched(cypher, rows)
 
     def _sync_rel_superseded_by(self, theories: list) -> int:
-        rows = [
-            {"old_id": t.id, "new_id": t.superseded_by}
-            for t in theories
-            if t.superseded_by
-        ]
+        rows = [{"old_id": t.id, "new_id": t.superseded_by} for t in theories if t.superseded_by]
         if not rows:
             return 0
         cypher = (
@@ -630,10 +659,12 @@ class GraphStore:
         for cle in cle_rows:
             link = causal_links_by_id.get(cle["causal_link_id"])
             if link and link.cause_text.strip():
-                rows.append({
-                    "episode_id": cle["episode_id"],
-                    "concept_text": link.cause_text.strip().lower(),
-                })
+                rows.append(
+                    {
+                        "episode_id": cle["episode_id"],
+                        "concept_text": link.cause_text.strip().lower(),
+                    }
+                )
         if not rows:
             return 0
         cypher = (
@@ -744,6 +775,7 @@ class GraphStore:
         with self._driver.session(database=self._database) as neo_session:
             # Delete stale sessions
             if project:
+
                 def _del_sessions_proj(tx: Any) -> int:
                     result = tx.run(
                         "MATCH (s:Session {project: $project}) WHERE NOT s.id IN $ids "
@@ -752,8 +784,10 @@ class GraphStore:
                     )
                     record = result.single()
                     return record["deleted"] if record else 0
+
                 cleaned["sessions"] = neo_session.execute_write(_del_sessions_proj)
             else:
+
                 def _del_sessions_all(tx: Any) -> int:
                     result = tx.run(
                         "MATCH (s:Session) WHERE NOT s.id IN $ids "
@@ -762,10 +796,12 @@ class GraphStore:
                     )
                     record = result.single()
                     return record["deleted"] if record else 0
+
                 cleaned["sessions"] = neo_session.execute_write(_del_sessions_all)
 
             # Delete stale episodes
             if project:
+
                 def _del_episodes_proj(tx: Any) -> int:
                     result = tx.run(
                         "MATCH (e:Episode) WHERE e.session_id IN $session_ids AND NOT e.id IN $ids "
@@ -774,8 +810,10 @@ class GraphStore:
                     )
                     record = result.single()
                     return record["deleted"] if record else 0
+
                 cleaned["episodes"] = neo_session.execute_write(_del_episodes_proj)
             else:
+
                 def _del_episodes_all(tx: Any) -> int:
                     result = tx.run(
                         "MATCH (e:Episode) WHERE NOT e.id IN $ids "
@@ -784,10 +822,12 @@ class GraphStore:
                     )
                     record = result.single()
                     return record["deleted"] if record else 0
+
                 cleaned["episodes"] = neo_session.execute_write(_del_episodes_all)
 
             # Delete stale theories
             if project:
+
                 def _del_theories_proj(tx: Any) -> int:
                     result = tx.run(
                         "MATCH (t:Theory) WHERE t.scope_qualifier = $project AND NOT t.id IN $ids "
@@ -796,8 +836,10 @@ class GraphStore:
                     )
                     record = result.single()
                     return record["deleted"] if record else 0
+
                 cleaned["theories"] = neo_session.execute_write(_del_theories_proj)
             else:
+
                 def _del_theories_all(tx: Any) -> int:
                     result = tx.run(
                         "MATCH (t:Theory) WHERE NOT t.id IN $ids "
@@ -806,6 +848,7 @@ class GraphStore:
                     )
                     record = result.single()
                     return record["deleted"] if record else 0
+
                 cleaned["theories"] = neo_session.execute_write(_del_theories_all)
 
         return cleaned
@@ -846,7 +889,5 @@ class GraphStore:
     def reset(self) -> dict[str, str]:
         """Delete all nodes and relationships from the graph."""
         with self._driver.session(database=self._database) as session:
-            session.run(
-                "CALL () { MATCH (n) DETACH DELETE n } IN TRANSACTIONS OF 10000 ROWS"
-            )
+            session.run("CALL () { MATCH (n) DETACH DELETE n } IN TRANSACTIONS OF 10000 ROWS")
         return {"message": "Graph cleared"}
