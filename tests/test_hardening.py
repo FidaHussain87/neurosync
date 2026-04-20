@@ -150,12 +150,12 @@ class TestDegradedMode:
         # Should not raise
         episodic.decay_episodes([ep.id])
 
-    def test_working_recall_without_vectorstore(self, db):
-        """WorkingMemory.recall should return empty result without vectorstore."""
-        from neurosync.working import WorkingMemory
+    def test_retrieval_recall_without_vectorstore(self, db):
+        """RetrievalPipeline.recall should return empty result without vectorstore."""
+        from neurosync.retrieval import RetrievalPipeline
 
-        working = WorkingMemory(db, vectorstore=None)
-        result = working.recall(project="test", context="anything")
+        pipeline = RetrievalPipeline(db, vectorstore=None)
+        result = pipeline.recall(project="test", context="anything")
         assert result["primary"] is None
         assert result["supporting"] == []
 

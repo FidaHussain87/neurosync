@@ -236,7 +236,37 @@ class PostgresDatabase:
     def _put_conn(self, conn: Any) -> None:
         self._pool.putconn(conn)
 
+    def _reconnect(self) -> None:
+        """Close stale pool and create a fresh one. Thread-safe via self._lock."""
+        import contextlib
+
+        import psycopg2.pool
+
+        with self._lock:
+            with contextlib.suppress(Exception):
+                self._pool.closeall()
+            self._pool = psycopg2.pool.ThreadedConnectionPool(
+                minconn=1,
+                maxconn=5,
+                dsn=self._config.pg_dsn,
+            )
+
+    def _with_retry(self, fn: Any) -> Any:
+        """Execute fn(); on OperationalError/InterfaceError, reconnect and retry once."""
+        import psycopg2
+
+        try:
+            return fn()
+        except (psycopg2.OperationalError, psycopg2.InterfaceError):
+            logger.warning("PostgreSQL connection lost, attempting reconnect", exc_info=True)
+            self._reconnect()
+            return fn()
+
     def _execute(self, sql: str, params: Any = None, returning: bool = False) -> Any:
+        """Execute a single SQL statement with automatic connection management and retry."""
+        return self._with_retry(lambda: self._execute_inner(sql, params, returning))
+
+    def _execute_inner(self, sql: str, params: Any = None, returning: bool = False) -> Any:
         """Execute a single SQL statement with automatic connection management."""
         conn = self._get_conn()
         try:
@@ -255,6 +285,10 @@ class PostgresDatabase:
             self._put_conn(conn)
 
     def _query(self, sql: str, params: Any = None) -> list[dict[str, Any]]:
+        """Execute a query and return results as list of dicts, with retry on connection loss."""
+        return self._with_retry(lambda: self._query_inner(sql, params))
+
+    def _query_inner(self, sql: str, params: Any = None) -> list[dict[str, Any]]:
         """Execute a query and return results as list of dicts."""
         conn = self._get_conn()
         try:
@@ -263,6 +297,9 @@ class PostgresDatabase:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 cur.execute(sql, params)
                 return [dict(row) for row in cur.fetchall()]
+        except Exception:
+            conn.rollback()
+            raise
         finally:
             self._put_conn(conn)
 
@@ -1013,25 +1050,28 @@ class PostgresDatabase:
     def set_entity_fingerprints(
         self, entity_id: str, entity_type: str, patterns: list[str]
     ) -> None:
-        conn = self._get_conn()
-        try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "DELETE FROM entity_fingerprints WHERE entity_id = %s AND entity_type = %s",
-                    (entity_id, entity_type),
-                )
-                for pattern in patterns:
-                    if pattern:
-                        cur.execute(
-                            "INSERT INTO entity_fingerprints (entity_id, entity_type, pattern) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
-                            (entity_id, entity_type, pattern),
-                        )
-                conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            self._put_conn(conn)
+        def _do_set() -> None:
+            conn = self._get_conn()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "DELETE FROM entity_fingerprints WHERE entity_id = %s AND entity_type = %s",
+                        (entity_id, entity_type),
+                    )
+                    for pattern in patterns:
+                        if pattern:
+                            cur.execute(
+                                "INSERT INTO entity_fingerprints (entity_id, entity_type, pattern) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
+                                (entity_id, entity_type, pattern),
+                            )
+                    conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                self._put_conn(conn)
+
+        self._with_retry(_do_set)
 
     def get_entity_fingerprints(self, entity_id: str, entity_type: str) -> list[str]:
         rows = self._query(

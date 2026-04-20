@@ -20,7 +20,6 @@ from neurosync.episodic import EpisodicMemory
 from neurosync.semantic import SemanticMemory
 from neurosync.user_model import UserModel
 from neurosync.vectorstore import VectorStore
-from neurosync.working import WorkingMemory
 
 
 @pytest.fixture
@@ -59,11 +58,6 @@ def episodic(db, vectorstore):
 @pytest.fixture
 def semantic(db, vectorstore):
     return SemanticMemory(db, vectorstore)
-
-
-@pytest.fixture
-def working(db, vectorstore):
-    return WorkingMemory(db, vectorstore)
 
 
 @pytest.fixture

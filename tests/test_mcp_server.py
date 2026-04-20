@@ -15,9 +15,9 @@ def _reset_server():
     mcp._vs = None
     mcp._episodic = None
     mcp._semantic = None
-    mcp._working = None
     mcp._current_session_id = None
     mcp._correction_count = 0
+    mcp._correction_topics = []
     mcp._git_observer = None
 
 

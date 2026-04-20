@@ -100,17 +100,17 @@ class RetrievalPipeline:
         continuation: Optional[dict[str, Any]] = None
         if project:
             cont_results = self._vs.search_episodes(
-                "CONTINUATION", n_results=3, where={"project": project}
+                f"{project} continuation unfinished work",
+                n_results=3,
+                where={"$and": [{"project": project}, {"event_type": "continuation"}]},
             )
             for cr in cont_results:
-                meta = cr.get("metadata", {})
-                if meta.get("event_type") == "continuation":
-                    continuation = {
-                        "id": cr["id"],
-                        "content": cr.get("document", ""),
-                    }
-                    tokens_used += estimate_tokens(cr.get("document", ""))
-                    break
+                continuation = {
+                    "id": cr["id"],
+                    "content": cr.get("document", ""),
+                }
+                tokens_used += estimate_tokens(cr.get("document", ""))
+                break
 
         # Recent episodes
         recent: list[dict[str, Any]] = []
@@ -144,7 +144,12 @@ class RetrievalPipeline:
         }
 
     def format_for_context(self, recall_result: dict[str, Any]) -> str:
-        """Format recall result as a readable context string for injection."""
+        """Format recall result as a readable context string for injection.
+
+        Public API for non-MCP integrations (e.g., direct Python usage, custom
+        hooks, or embedding recall context into prompts programmatically).
+        Not called by the MCP server itself, which returns structured JSON.
+        """
         parts: list[str] = []
 
         continuation = recall_result.get("continuation")

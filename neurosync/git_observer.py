@@ -25,6 +25,28 @@ _FILE_TYPE_MAP = {
     ".sh": "Shell",
 }
 
+# Map file path patterns to architecture layer names for DEPTH signal
+_LAYER_PATTERNS: list[tuple[str, str]] = [
+    ("test", "test"),
+    ("frontend/", "ui"),
+    ("src/components/", "ui"),
+    ("src/hooks/", "ui"),
+    ("config", "config"),
+    (".yaml", "config"),
+    (".yml", "config"),
+    (".json", "config"),
+    ("endpoint", "endpoint"),
+    ("api/", "endpoint"),
+    ("routes/", "endpoint"),
+    ("views/", "endpoint"),
+    ("service", "service"),
+    ("dao", "dao"),
+    ("db", "dao"),
+    ("models", "dao"),
+    ("scanner", "scanner"),
+    ("cli", "endpoint"),
+]
+
 
 @dataclass
 class GitSnapshot:
@@ -49,11 +71,12 @@ class GitObserver:
         head_sha = self._get_head_sha()
         if not head_sha:
             return None
+        modified, untracked = self._parse_porcelain_status()
         self._baseline = GitSnapshot(
             head_sha=head_sha,
             branch=self._get_branch(),
-            modified_files=self._get_modified_files(),
-            untracked_files=self._get_untracked_files(),
+            modified_files=modified,
+            untracked_files=untracked,
         )
         return self._baseline
 
@@ -82,10 +105,11 @@ class GitObserver:
                     }
                 )
 
-        # Collect file changes
-        current_modified = set(self._get_modified_files())
+        # Collect file changes (single git status call)
+        current_modified, _ = self._parse_porcelain_status()
+        current_modified_set = set(current_modified)
         baseline_modified = set(self._baseline.modified_files)
-        new_changes = current_modified - baseline_modified
+        new_changes = current_modified_set - baseline_modified
         if new_changes:
             classified = self._classify_files(list(new_changes))
             summary_parts = []
@@ -95,17 +119,36 @@ class GitObserver:
                 )
             summary = ", ".join(summary_parts)
             file_list = sorted(new_changes)
+            layers = self._infer_layers(file_list)
             events.append(
                 {
                     "type": "observed",
                     "content": f"Files changed during session: {summary} ({', '.join(f for f in file_list[:10])})",
                     "signal_weight": 0.3,
                     "files": file_list,
-                    "layers": [],
+                    "layers": layers,
                 }
             )
 
         return events
+
+    def _parse_porcelain_status(self) -> tuple[list[str], list[str]]:
+        """Run git status --porcelain once and return (modified, untracked) file lists."""
+        output = self._run_git("status", "--porcelain")
+        if not output:
+            return [], []
+        modified: list[str] = []
+        untracked: list[str] = []
+        for line in output.splitlines():
+            if len(line) > 3:
+                filename = line[3:].strip()
+                if not filename:
+                    continue
+                if line.startswith("??"):
+                    untracked.append(filename)
+                else:
+                    modified.append(filename)
+        return modified, untracked
 
     def _run_git(self, *args: str) -> Optional[str]:
         """Run a git command with timeout. Returns stdout or None on failure."""
@@ -132,31 +175,14 @@ class GitObserver:
         return self._run_git("rev-parse", "--abbrev-ref", "HEAD") or ""
 
     def _get_modified_files(self) -> list[str]:
-        """Get list of modified/staged files via git status --porcelain."""
-        output = self._run_git("status", "--porcelain")
-        if not output:
-            return []
-        files = []
-        for line in output.splitlines():
-            if len(line) > 3:
-                # porcelain format: XY filename
-                filename = line[3:].strip()
-                if filename:
-                    files.append(filename)
-        return files
+        """Get list of modified/staged files."""
+        modified, _ = self._parse_porcelain_status()
+        return modified
 
     def _get_untracked_files(self) -> list[str]:
         """Get list of untracked files."""
-        output = self._run_git("status", "--porcelain")
-        if not output:
-            return []
-        files = []
-        for line in output.splitlines():
-            if line.startswith("??"):
-                filename = line[3:].strip()
-                if filename:
-                    files.append(filename)
-        return files
+        _, untracked = self._parse_porcelain_status()
+        return untracked
 
     def _get_commit_messages_since(self, sha: str) -> list[str]:
         """Get commit messages since a given SHA."""
@@ -174,3 +200,15 @@ class GitObserver:
             file_type = _FILE_TYPE_MAP.get(ext.lower(), "other")
             groups.setdefault(file_type, []).append(filepath)
         return groups
+
+    @staticmethod
+    def _infer_layers(files: list[str]) -> list[str]:
+        """Infer architecture layers from file paths for the DEPTH signal."""
+        layers: set[str] = set()
+        for filepath in files:
+            filepath_lower = filepath.lower()
+            for pattern, layer in _LAYER_PATTERNS:
+                if pattern in filepath_lower:
+                    layers.add(layer)
+                    break  # first match wins per file
+        return sorted(layers)

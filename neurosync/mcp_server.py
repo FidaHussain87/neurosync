@@ -25,7 +25,6 @@ from neurosync.semantic import SemanticMemory
 from neurosync.user_model import UserModel
 from neurosync.vectorstore import VectorStore
 from neurosync.version import __version__
-from neurosync.working import WorkingMemory
 
 logger = get_logger("mcp_server")
 
@@ -369,7 +368,6 @@ _db: Optional[Database] = None
 _vs: Optional[VectorStore] = None
 _episodic: Optional[EpisodicMemory] = None
 _semantic: Optional[SemanticMemory] = None
-_working: Optional[WorkingMemory] = None
 _analogy: Optional[AnalogyEngine] = None
 _causal: Optional[CausalGraph] = None
 _failure: Optional[FailureModel] = None
@@ -385,7 +383,7 @@ _git_observer: Optional[GitObserver] = None
 
 
 def _init() -> None:
-    global _config, _db, _vs, _episodic, _semantic, _working
+    global _config, _db, _vs, _episodic, _semantic
     global _analogy, _causal, _failure, _forgetting, _hierarchy
     global _user_model, _retrieval
     if _db is not None:
@@ -425,7 +423,6 @@ def _init() -> None:
     # Build engines — they accept Optional[VectorStore]
     episodic = EpisodicMemory(db, vs)
     semantic = SemanticMemory(db, vs)
-    working = WorkingMemory(db, vs)
     analogy = AnalogyEngine(db, vs) if vs else None
     causal = CausalGraph(db, vs)
     failure = FailureModel(db, vs)
@@ -440,7 +437,6 @@ def _init() -> None:
     _vs = vs
     _episodic = episodic
     _semantic = semantic
-    _working = working
     _analogy = analogy
     _causal = causal
     _failure = failure
@@ -467,6 +463,40 @@ def _ensure_session(project: str = "", branch: str = "") -> str:
     return session.id
 
 
+def _rotate_session() -> None:
+    """End the current session and reset per-session state.
+
+    Called at the start of handle_recall() because the protocol mandates
+    "call recall at session start" — making it the natural session boundary.
+    If no session exists yet (first call), this is a no-op.
+    """
+    global _current_session_id, _correction_count, _correction_topics, _git_observer
+    if _current_session_id is None:
+        return
+    # Capture git delta and end the old session
+    try:
+        if _git_observer and _episodic:
+            session_id = _current_session_id
+            for event in _git_observer.capture_delta():
+                _episodic.record_episode(
+                    session_id=session_id,
+                    event_type="observed",
+                    content=event.get("content", ""),
+                    files_touched=event.get("files", []),
+                    layers_touched=event.get("layers", []),
+                    signal_weight=event.get("signal_weight", 0.3),
+                )
+        if _episodic:
+            _episodic.end_session(_current_session_id)
+    except Exception:
+        logger.debug("Error during session rotation cleanup", exc_info=True)
+    # Reset per-session state
+    _current_session_id = None
+    _correction_count = 0
+    _correction_topics = []
+    _git_observer = None
+
+
 def _get_graph():
     """Lazy-init GraphStore on first use."""
     global _graph
@@ -491,7 +521,7 @@ def _get_graph():
 
 def _try_auto_consolidate() -> Optional[dict]:
     """Run auto-consolidation if enabled and threshold is met. Returns result or None."""
-    if _config and _config.auto_consolidation_enabled and _db and _vs and _episodic and _semantic:
+    if _config and _config.auto_consolidation_enabled and _db and _episodic and _semantic:
         result = maybe_consolidate(
             _db,
             _vs,
@@ -517,6 +547,8 @@ def _try_auto_consolidate() -> Optional[dict]:
 
 
 def handle_recall(params: dict[str, Any]) -> dict[str, Any]:
+    _init()
+    _rotate_session()
     _require_init(_retrieval, _failure, _hierarchy, _forgetting)
     git_info = detect_git_info()
     project = params.get("project") or git_info.get("project", "")
