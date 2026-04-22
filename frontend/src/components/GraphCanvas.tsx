@@ -1,14 +1,17 @@
-import { useRef, useCallback, useEffect, useMemo, useState } from 'react';
-import ForceGraph2D, { type ForceGraphMethods, type NodeObject, type LinkObject } from 'react-force-graph-2d';
+import { useRef, useCallback, useEffect, useState } from 'react';
+import ForceGraph3D, { type ForceGraphMethods } from 'react-force-graph-3d';
+import * as THREE from 'three';
 import type { GraphData, GraphNode, GraphLink, NodeType } from '../types';
-import { NODE_STYLES, LINK_STYLES, DEFAULT_LINK_STYLE } from '../constants';
+import { NODE_STYLES, LINK_STYLES, DEFAULT_LINK_STYLE, NODE_TIER, type VisualTier } from '../constants';
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type FGMethods = ForceGraphMethods<any, any>;
 
 interface Props {
   graphData: GraphData;
   selectedNode: GraphNode | null;
   onNodeClick: (node: GraphNode) => void;
   onBackgroundClick: () => void;
-  onClusterDrillIn?: () => void;
   viewResetCount: number;
 }
 
@@ -42,234 +45,228 @@ function getEpisodeColor(node: GraphNode): string {
   return EPISODE_TYPE_HUE[eventType] ?? NODE_STYLES.Episode.color;
 }
 
-// ─────────────────────────────────────────────────────────────
-// Multi-layer parallax star field — generated once, static
-// ─────────────────────────────────────────────────────────────
-
-interface Star {
-  x: number;         // normalized 0..1 position within layer
-  y: number;
-  r: number;         // base radius in screen pixels
-  brightness: number; // peak alpha
-  temperature: number; // 0 = warm (amber/red), 1 = cool (blue/white)
-  twinklePhase: number;
-  twinkleSpeed: number;
-  hasDiffraction: boolean;
-}
-
-// Layer 0: distant nebula dust (screen-space, no parallax)
-// Layer 1: far stars (screen-space, slow parallax)
-// Layer 2: mid stars (screen-space, medium parallax)
-// Layer 3: near stars (screen-space, fast parallax — closest to camera)
-interface StarLayer {
-  stars: Star[];
-  parallaxFactor: number;  // 0 = fixed to screen, 1 = moves with graph
-  sizeScale: number;       // multiplier for star radius
-}
-
-function generateStarLayer(count: number, parallax: number, sizeScale: number, diffractionChance: number): StarLayer {
-  const stars: Star[] = [];
-  for (let i = 0; i < count; i++) {
-    stars.push({
-      x: Math.random(),
-      y: Math.random(),
-      r: (0.2 + Math.random() * 0.8) * sizeScale,
-      brightness: 0.15 + Math.random() * 0.65,
-      temperature: Math.random(),
-      twinklePhase: Math.random() * Math.PI * 2,
-      twinkleSpeed: 0.3 + Math.random() * 1.5,
-      hasDiffraction: Math.random() < diffractionChance,
-    });
-  }
-  return { stars, parallaxFactor: parallax, sizeScale };
-}
-
-// Pre-generate 4 layers with increasing parallax
-const STAR_LAYERS: StarLayer[] = [
-  generateStarLayer(200, 0.0, 0.4, 0.0),   // dust — pinned to screen
-  generateStarLayer(150, 0.02, 0.7, 0.02),  // distant
-  generateStarLayer(100, 0.05, 1.0, 0.08),  // mid
-  generateStarLayer(40,  0.10, 1.6, 0.25),  // near — larger, more diffraction
-];
-
-// Star color from temperature (Planck-like simplified)
-function starColor(temp: number, alpha: number): string {
-  // temp 0..1 maps from warm (3000K orange) to cool (10000K blue-white)
-  let r: number, g: number, b: number;
-  if (temp < 0.25) {
-    // Red / orange giant
-    r = 255; g = 180 + temp * 200; b = 140;
-  } else if (temp < 0.5) {
-    // Yellow / white (sun-like)
-    r = 255; g = 240; b = 200 + (temp - 0.25) * 220;
-  } else if (temp < 0.75) {
-    // White
-    r = 220 + (0.75 - temp) * 140; g = 225 + (0.75 - temp) * 60; b = 255;
-  } else {
-    // Blue-white hot star
-    r = 180; g = 200; b = 255;
-  }
-  return `rgba(${Math.round(r)},${Math.round(g)},${Math.round(b)},${alpha.toFixed(3)})`;
-}
-
-// ─────────────────────────────────────────────────────────────
-// Space fabric grid — Gaussian curvature near massive nodes
-// ─────────────────────────────────────────────────────────────
-
-function drawSpaceFabric(
-  ctx: CanvasRenderingContext2D,
-  nodes: GraphNode[],
-  globalScale: number,
-) {
-  // Only draw when zoomed in enough to see detail
-  if (globalScale < 1.5) return;
-
-  const massiveNodes = nodes.filter(n =>
-    n.x !== undefined && n.y !== undefined &&
-    (n.label === 'Theory' || n.label === 'Session' || n.label === 'Concept'),
-  );
-  if (massiveNodes.length === 0) return;
-
-  const gridAlpha = Math.min(0.12, 0.04 * globalScale);
-
-  ctx.strokeStyle = `rgba(100, 120, 180, ${gridAlpha})`;
-  ctx.lineWidth = 0.3 / globalScale;
-
-  for (const node of massiveNodes) {
-    const nx = node.x!;
-    const ny = node.y!;
-    const mass = node.label === 'Theory'
-      ? 2 + Number(node.properties.confidence ?? 0.5) * 4
-      : node.label === 'Session' ? 3 : 1.5;
-    const fieldRadius = (30 + mass * 12) / globalScale * 3;
-
-    // Draw concentric distortion rings (geodesics in curved space)
-    for (let ring = 1; ring <= 4; ring++) {
-      const baseR = ring * fieldRadius * 0.25;
-      ctx.beginPath();
-      const segments = 48;
-      for (let s = 0; s <= segments; s++) {
-        const angle = (s / segments) * Math.PI * 2;
-        // Schwarzschild-like radial distortion: r_apparent = r * (1 + rs/(2r))
-        // Simplified: rings closer to center are pushed outward slightly
-        const distortion = 1 + (mass * 2) / (baseR * globalScale + mass * 4);
-        const r = baseR * distortion;
-        const px = nx + Math.cos(angle) * r;
-        const py = ny + Math.sin(angle) * r;
-        if (s === 0) ctx.moveTo(px, py);
-        else ctx.lineTo(px, py);
-      }
-      ctx.stroke();
-    }
-
-    // Radial field lines
-    for (let spoke = 0; spoke < 12; spoke++) {
-      const angle = (spoke / 12) * Math.PI * 2;
-      ctx.beginPath();
-      const innerR = fieldRadius * 0.15;
-      const outerR = fieldRadius;
-      ctx.moveTo(
-        nx + Math.cos(angle) * innerR,
-        ny + Math.sin(angle) * innerR,
-      );
-      // Slight spiral (frame dragging)
-      const twist = mass * 0.05;
-      ctx.quadraticCurveTo(
-        nx + Math.cos(angle + twist) * (outerR * 0.6),
-        ny + Math.sin(angle + twist) * (outerR * 0.6),
-        nx + Math.cos(angle + twist * 2) * outerR,
-        ny + Math.sin(angle + twist * 2) * outerR,
-      );
-      ctx.stroke();
-    }
-  }
-}
-
-// ─────────────────────────────────────────────────────────────
-// Node mass for gravitational force computation
-// ─────────────────────────────────────────────────────────────
 function getNodeMass(node: GraphNode): number {
   switch (node.label) {
-    case 'Session': return 8;
-    case 'Theory': return 4 + Number(node.properties.confidence ?? 0.5) * 6;
-    case 'Concept': return 3;
-    case 'FailureRecord': return 3;
-    case 'Contradiction': return 2.5;
+    case 'Session': return 12;
+    case 'Theory': return 5 + Number(node.properties.confidence ?? 0.5) * 5;
+    case 'Concept': return 4;
+    case 'FailureRecord': return 4;
+    case 'StructuralPattern': return 3;
     case 'Episode': return 1.5;
-    case 'StructuralPattern': return 2;
-    case 'UserKnowledge': return 2;
+    case 'Contradiction': return 1.5;
+    case 'UserKnowledge': return 1.2;
     default: return 1;
   }
 }
 
-// ── Component ──────────────────────────────────────────────
-const CLUSTER_ZOOM_THRESHOLD = 3.0;
+function getNodeTier(node: GraphNode): VisualTier {
+  return NODE_TIER[node.label as NodeType] ?? 3;
+}
 
-export default function GraphCanvas({ graphData, selectedNode, onNodeClick, onBackgroundClick, onClusterDrillIn, viewResetCount }: Props) {
-  const fgRef = useRef<ForceGraphMethods<NodeObject<GraphNode>, LinkObject<GraphNode, GraphLink>> | undefined>(undefined);
+// ─────────────────────────────────────────────────────────
+// Glow texture generator — cached per color
+// ─────────────────────────────────────────────────────────
+
+const glowTextureCache = new Map<string, THREE.CanvasTexture>();
+
+function createGlowTexture(hexColor: string): THREE.CanvasTexture {
+  const cached = glowTextureCache.get(hexColor);
+  if (cached) return cached;
+
+  const size = 128;
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d')!;
+
+  const cx = size / 2;
+  const cy = size / 2;
+  const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, cx);
+  grad.addColorStop(0,    hexColor + 'FF');
+  grad.addColorStop(0.1,  hexColor + 'EE');
+  grad.addColorStop(0.25, hexColor + 'AA');
+  grad.addColorStop(0.45, hexColor + '55');
+  grad.addColorStop(0.7,  hexColor + '1A');
+  grad.addColorStop(1,    hexColor + '00');
+
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, size, size);
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.needsUpdate = true;
+  glowTextureCache.set(hexColor, texture);
+  return texture;
+}
+
+// ─────────────────────────────────────────────────────────
+// Shared geometry/material pools — avoids per-node GPU alloc
+// ─────────────────────────────────────────────────────────
+
+const sharedGeometries = {
+  core: new Map<string, THREE.SphereGeometry>(),
+  ring: new Map<string, THREE.RingGeometry>(),
+};
+
+function getCoreSphereGeo(radius: number): THREE.SphereGeometry {
+  const key = radius.toFixed(2);
+  let geo = sharedGeometries.core.get(key);
+  if (!geo) {
+    geo = new THREE.SphereGeometry(radius, 16, 16);
+    sharedGeometries.core.set(key, geo);
+  }
+  return geo;
+}
+
+function getRingGeo(inner: number, outer: number): THREE.RingGeometry {
+  const key = `${inner.toFixed(2)}-${outer.toFixed(2)}`;
+  let geo = sharedGeometries.ring.get(key);
+  if (!geo) {
+    geo = new THREE.RingGeometry(inner, outer, 32);
+    sharedGeometries.ring.set(key, geo);
+  }
+  return geo;
+}
+
+const sharedMaterials = new Map<string, THREE.MeshBasicMaterial | THREE.SpriteMaterial>();
+
+function getCoreMaterial(hexColor: string): THREE.MeshBasicMaterial {
+  const key = `core-${hexColor}`;
+  let mat = sharedMaterials.get(key) as THREE.MeshBasicMaterial | undefined;
+  if (!mat) {
+    mat = new THREE.MeshBasicMaterial({
+      color: new THREE.Color(hexColor),
+      transparent: true,
+      opacity: 0.9,
+    });
+    sharedMaterials.set(key, mat);
+  }
+  return mat;
+}
+
+const selectionRingMaterial = new THREE.MeshBasicMaterial({
+  color: 0xffffff,
+  transparent: true,
+  opacity: 0.7,
+  side: THREE.DoubleSide,
+  depthWrite: false,
+});
+
+function getGlowSpriteMaterial(hexColor: string, opacity: number): THREE.SpriteMaterial {
+  const key = `glow-${hexColor}-${opacity.toFixed(2)}`;
+  let mat = sharedMaterials.get(key) as THREE.SpriteMaterial | undefined;
+  if (!mat) {
+    mat = new THREE.SpriteMaterial({
+      map: createGlowTexture(hexColor),
+      transparent: true,
+      opacity,
+      depthWrite: false,
+    });
+    sharedMaterials.set(key, mat);
+  }
+  return mat;
+}
+
+// ─────────────────────────────────────────────────────────
+// Starfield helper — creates a THREE.Points cloud
+// ─────────────────────────────────────────────────────────
+
+function createStarField(count: number, spread: number): THREE.Points {
+  const positions = new Float32Array(count * 3);
+  const colors = new Float32Array(count * 3);
+
+  for (let i = 0; i < count; i++) {
+    const theta = Math.random() * Math.PI * 2;
+    const phi = Math.acos(2 * Math.random() - 1);
+    const r = spread * (0.3 + Math.random() * 0.7);
+
+    positions[i * 3] = r * Math.sin(phi) * Math.cos(theta);
+    positions[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta);
+    positions[i * 3 + 2] = r * Math.cos(phi);
+
+    const temp = Math.random();
+    if (temp < 0.25) {
+      colors[i * 3] = 1.0; colors[i * 3 + 1] = 0.75; colors[i * 3 + 2] = 0.55;
+    } else if (temp < 0.5) {
+      colors[i * 3] = 1.0; colors[i * 3 + 1] = 0.94; colors[i * 3 + 2] = 0.85;
+    } else if (temp < 0.75) {
+      colors[i * 3] = 0.9; colors[i * 3 + 1] = 0.92; colors[i * 3 + 2] = 1.0;
+    } else {
+      colors[i * 3] = 0.7; colors[i * 3 + 1] = 0.8; colors[i * 3 + 2] = 1.0;
+    }
+  }
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+  const material = new THREE.PointsMaterial({
+    size: 1.5,
+    vertexColors: true,
+    transparent: true,
+    opacity: 0.7,
+    sizeAttenuation: true,
+    depthWrite: false,
+  });
+
+  return new THREE.Points(geometry, material);
+}
+
+// ─────────────────────────────────────────────────────────
+// Extract hex color + alpha from rgba() string
+// ─────────────────────────────────────────────────────────
+
+function rgbaToHexAlpha(rgba: string): { hex: string; alpha: number } {
+  const m = rgba.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*(?:,\s*([\d.]+))?\s*\)/);
+  if (!m) return { hex: rgba, alpha: 1 };
+  const r = parseInt(m[1], 10);
+  const g = parseInt(m[2], 10);
+  const b = parseInt(m[3], 10);
+  const a = m[4] !== undefined ? parseFloat(m[4]) : 1;
+  const hex = '#' + ((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1);
+  return { hex, alpha: a };
+}
+
+// ── Zoom constants ──
+const ZOOM_MIN_DIST = 30;
+const ZOOM_MAX_DIST = 5000;
+
+// Log-scale mapping: slider position (0–1) ↔ camera distance
+// Top of slider = zoomed in (min dist), bottom = zoomed out (max dist)
+const LOG_MIN = Math.log(ZOOM_MIN_DIST);
+const LOG_MAX = Math.log(ZOOM_MAX_DIST);
+
+function distToSliderPct(dist: number): number {
+  const clamped = Math.max(ZOOM_MIN_DIST, Math.min(ZOOM_MAX_DIST, dist));
+  return (Math.log(clamped) - LOG_MIN) / (LOG_MAX - LOG_MIN);
+}
+
+function sliderPctToDist(pct: number): number {
+  const p = Math.max(0, Math.min(1, pct));
+  return Math.exp(LOG_MIN + p * (LOG_MAX - LOG_MIN));
+}
+
+// ── Component ──────────────────────────────────────────────
+
+export default function GraphCanvas({ graphData, selectedNode, onNodeClick, onBackgroundClick, viewResetCount }: Props) {
+  const fgRef = useRef<FGMethods | undefined>(undefined);
   const containerRef = useRef<HTMLDivElement>(null);
   const [dimensions, setDimensions] = useState({ width: 800, height: 600 });
-  const [zoomLevel, setZoomLevel] = useState(1);
+  const [zoomDist, setZoomDist] = useState(400);
+  const zoomAnimRef = useRef(0);
   const prevResetCountRef = useRef(viewResetCount);
   const timeRef = useRef(0);
-  const idleTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const animatingRef = useRef(true);
+  const lastTickRef = useRef(performance.now());
+  const sceneInitRef = useRef(false);
+  const starFieldRef = useRef<THREE.Points | null>(null);
+  const cameraDistRef = useRef(400);
+  const controlsAttached = useRef(false);
+  const forcesConfigured = useRef(false);
+  const hasData = graphData.nodes.length > 0;
 
-  // ── Idle-aware animation tick (pauses after 5s of no interaction) ──
-  useEffect(() => {
-    let running = true;
-    let last = performance.now();
-    let rafId = 0;
-
-    const tick = (now: number) => {
-      if (!running) return;
-      timeRef.current += (now - last) * 0.001;
-      last = now;
-      if (animatingRef.current) {
-        rafId = requestAnimationFrame(tick);
-      }
-    };
-
-    const startAnimating = () => {
-      if (!animatingRef.current) {
-        animatingRef.current = true;
-        last = performance.now();
-        rafId = requestAnimationFrame(tick);
-      }
-      // Reset idle timer
-      if (idleTimeoutRef.current) clearTimeout(idleTimeoutRef.current);
-      idleTimeoutRef.current = setTimeout(() => {
-        animatingRef.current = false;
-      }, 5000); // Pause animation after 5s idle
-    };
-
-    // Start initial animation
-    startAnimating();
-    rafId = requestAnimationFrame(tick);
-
-    // Wake on user interaction
-    const el = containerRef.current;
-    const wake = () => startAnimating();
-    if (el) {
-      el.addEventListener('mousemove', wake, { passive: true });
-      el.addEventListener('mousedown', wake, { passive: true });
-      el.addEventListener('wheel', wake, { passive: true });
-      el.addEventListener('touchstart', wake, { passive: true });
-    }
-
-    return () => {
-      running = false;
-      animatingRef.current = false;
-      cancelAnimationFrame(rafId);
-      if (idleTimeoutRef.current) clearTimeout(idleTimeoutRef.current);
-      if (el) {
-        el.removeEventListener('mousemove', wake);
-        el.removeEventListener('mousedown', wake);
-        el.removeEventListener('wheel', wake);
-        el.removeEventListener('touchstart', wake);
-      }
-    };
-  }, []);
+  // Track selected node ID in a ref so nodeThreeObject doesn't
+  // depend on selectedNode. Selection ring is managed in onEngineTick.
+  const selectedNodeIdRef = useRef<string | null>(null);
+  selectedNodeIdRef.current = selectedNode?.id ?? null;
 
   // ── Container resize tracking ──
   useEffect(() => {
@@ -283,68 +280,143 @@ export default function GraphCanvas({ graphData, selectedNode, onNodeClick, onBa
     return () => observer.disconnect();
   }, []);
 
-  // ── Wake animation when graph data changes ──
-  useEffect(() => {
-    if (graphData.nodes.length > 0) {
-      animatingRef.current = true;
-      if (idleTimeoutRef.current) clearTimeout(idleTimeoutRef.current);
-      idleTimeoutRef.current = setTimeout(() => { animatingRef.current = false; }, 5000);
-    }
-  }, [graphData]);
+  // ── Scene setup + force config + camera — all done from onEngineTick ──
+  // The kapsule-based ForceGraph3D initializes Three.js internals asynchronously.
+  // useEffect with [] deps fires too early — scene/controls/camera aren't ready.
+  // Instead, we do all initialization lazily inside onEngineTick, which only
+  // fires once the renderer is actually running.
 
-  // ── Configure gravitational forces (once on mount) ──
-  const forcesConfigured = useRef(false);
-  useEffect(() => {
+  const initScene = useCallback(() => {
+    if (sceneInitRef.current) return;
     const fg = fgRef.current;
-    if (!fg || forcesConfigured.current) return;
+    if (!fg) return;
+
+    let scene: THREE.Scene | undefined;
+    try { scene = fg.scene() as THREE.Scene; } catch { return; }
+    if (!scene) return;
+
+    sceneInitRef.current = true;
+    scene.background = new THREE.Color('#050810');
+    scene.fog = new THREE.FogExp2(0x050810, 0.00015);
+
+    const starField = createStarField(2000, 4000);
+    starFieldRef.current = starField;
+    scene.add(starField);
+
+    // Set initial camera position: 36-degree elevation angle
+    const dist = 400;
+    const elevationRad = (36 * Math.PI) / 180;
+    const y = dist * Math.sin(elevationRad);
+    const xz = dist * Math.cos(elevationRad);
+    fg.cameraPosition({ x: xz, y, z: xz }, { x: 0, y: 0, z: 0 }, 0);
+
+    // Attach controls listener for camera distance tracking
+    if (!controlsAttached.current) {
+      let controls: any;
+      try { controls = fg.controls(); } catch { /* */ }
+      if (controls && typeof controls.addEventListener === 'function') {
+        controlsAttached.current = true;
+        controls.addEventListener('change', () => {
+          let cam: THREE.Camera | undefined;
+          try { cam = fg.camera() as THREE.Camera; } catch { return; }
+          if (cam) {
+            const pos = cam.position;
+            cameraDistRef.current = Math.sqrt(pos.x * pos.x + pos.y * pos.y + pos.z * pos.z);
+          }
+        });
+      }
+    }
+  }, []);
+
+  const initForces = useCallback(() => {
+    if (forcesConfigured.current || !hasData) return;
+    const fg = fgRef.current;
+    if (!fg) return;
     forcesConfigured.current = true;
 
-    // Mass-weighted charge: heavier nodes repel more strongly
     const charge = fg.d3Force('charge');
-    if (charge && typeof charge.strength === 'function') {
-      charge.strength((node: GraphNode) => {
-        return -30 * getNodeMass(node);
+    if (charge && typeof (charge as any).strength === 'function') {
+      (charge as any).strength((node: GraphNode) => {
+        const mass = getNodeMass(node);
+        const tier = getNodeTier(node);
+        // T1 strong gravity, T2 medium, T3 enough repulsion to spread out
+        const multiplier = tier === 1 ? -50 : tier === 2 ? -30 : -25;
+        return multiplier * mass;
       });
-      if (typeof charge.distanceMax === 'function') {
-        charge.distanceMax(400);
+      if (typeof (charge as any).distanceMax === 'function') {
+        (charge as any).distanceMax(800);
       }
     }
 
-    // Link force: distance varies by relationship semantic weight
     const link = fg.d3Force('link');
-    if (link && typeof link.distance === 'function') {
-      link.distance((l: GraphLink) => {
+    if (link && typeof (link as any).distance === 'function') {
+      (link as any).distance((l: GraphLink) => {
         const type = l.type;
-        if (type === 'CONTAINS') return 40;
-        if (type === 'EXTRACTED_FROM') return 60;
-        if (type === 'CAUSES') return 50;
+        if (type === 'CONTAINS') return 60;
+        if (type === 'EXTRACTED_FROM') return 70;
+        if (type === 'CAUSES') return 55;
         if (type === 'CONTRADICTS') return 80;
-        if (type === 'PARENT_OF') return 45;
+        if (type === 'PARENT_OF') return 50;
         return 70;
       });
-      if (typeof link.strength === 'function') {
-        link.strength((l: GraphLink) => {
-          if (l.type === 'CONTAINS') return 0.8;
-          if (l.type === 'CAUSES') return 0.6;
+      if (typeof (link as any).strength === 'function') {
+        (link as any).strength((l: GraphLink) => {
+          if (l.type === 'CONTAINS') return 0.4;
+          if (l.type === 'PARENT_OF') return 0.6;
+          if (l.type === 'CAUSES') return 0.5;
           return 0.3;
         });
       }
     }
 
-    fg.d3ReheatSimulation();
-  });
+    try { fg.d3ReheatSimulation(); } catch { /* layout may not be ready */ }
+  }, [hasData]);
 
-  // ── Warm-start: spread new nodes in a circle ──
+  // ── Adapt fog density and starfield scale to graph extent ──
+  useEffect(() => {
+    if (!hasData || !sceneInitRef.current) return;
+    const fg = fgRef.current;
+    if (!fg) return;
+
+    let scene: THREE.Scene | undefined;
+    try { scene = fg.scene() as THREE.Scene; } catch { return; }
+    if (!scene || !scene.fog) return;
+
+    let maxR = 0;
+    for (const n of graphData.nodes) {
+      const x = n.x ?? 0, y = n.y ?? 0, z = n.z ?? 0;
+      const r = Math.sqrt(x * x + y * y + z * z);
+      if (r > maxR) maxR = r;
+    }
+    if (maxR < 100) maxR = 100;
+
+    const fog = scene.fog as THREE.FogExp2;
+    fog.density = Math.sqrt(-Math.log(0.05)) / (maxR * 12);
+
+    const starField = starFieldRef.current;
+    if (starField) {
+      const desiredScale = Math.max(4000, maxR * 5) / 4000;
+      starField.scale.setScalar(desiredScale);
+    }
+  }, [graphData, hasData]);
+
+  // ── Warm-start: Fibonacci sphere distribution for 3D ──
   useEffect(() => {
     const count = graphData.nodes.length;
     if (count === 0) return;
 
-    const radius = Math.max(80, count * 3);
+    const radius = Math.max(120, count * 4);
+    const goldenAngle = Math.PI * (3 - Math.sqrt(5));
+
     graphData.nodes.forEach((node, i) => {
-      if (node.x === undefined && node.y === undefined) {
-        const angle = (2 * Math.PI * i) / count;
-        node.x = Math.cos(angle) * radius + (Math.random() - 0.5) * 20;
-        node.y = Math.sin(angle) * radius + (Math.random() - 0.5) * 20;
+      if (node.x === undefined && node.y === undefined && node.z === undefined) {
+        const y = 1 - (i / (count - 1 || 1)) * 2;
+        const radiusAtY = Math.sqrt(1 - y * y);
+        const theta = goldenAngle * i;
+
+        node.x = Math.cos(theta) * radiusAtY * radius + (Math.random() - 0.5) * 20;
+        node.y = y * radius + (Math.random() - 0.5) * 20;
+        node.z = Math.sin(theta) * radiusAtY * radius + (Math.random() - 0.5) * 20;
       }
     });
 
@@ -357,442 +429,413 @@ export default function GraphCanvas({ graphData, selectedNode, onNodeClick, onBa
     }
   }, [graphData, viewResetCount]);
 
-  // ── Cluster aggregation for zoomed-out view ──
-  const clusterData = useMemo(() => {
-    if (graphData.nodes.length === 0) return null;
-    const clusters = new Map<number, GraphNode[]>();
-    for (const n of graphData.nodes) {
-      const c = n.cluster ?? 0;
-      if (!clusters.has(c)) clusters.set(c, []);
-      clusters.get(c)!.push(n);
-    }
-    if (clusters.size <= 1) return null;
+  // ─────────────────────────────────────────────────────────
+  // Node Three.js object builder — tier-specific visuals
+  // ─────────────────────────────────────────────────────────
+  const nodeThreeObject = useCallback(
+    (node: GraphNode) => {
+      const style = NODE_STYLES[node.label as NodeType] ?? { color: '#6B7280', borderColor: '#9CA3AF' };
+      const fillColor = node.label === 'Episode' ? getEpisodeColor(node) : style.color;
+      const mass = getNodeMass(node);
+      const baseRadius = getNodeRadius(node);
+      const tier = getNodeTier(node);
 
-    const clusterNodes: GraphNode[] = [];
-    const memberMap = new Map<string, number>();
+      const group = new THREE.Group();
+      group.userData.breathePhase = Math.random() * Math.PI * 2;
+      group.userData.nodeId = node.id;
+      group.userData.baseRadius = baseRadius;
+      group.userData.tier = tier;
 
-    for (const [clusterId, members] of clusters) {
-      memberMap.set(`cluster-${clusterId}`, clusterId);
-      for (const m of members) memberMap.set(m.id, clusterId);
+      if (tier === 1) {
+        // ── Tier 1: Galaxy Center (Session) ──
+        // Bright nebula halo
+        const nebulaSprite = new THREE.Sprite(getGlowSpriteMaterial(fillColor, 0.8));
+        nebulaSprite.scale.set(baseRadius * 3, baseRadius * 3, 1);
+        nebulaSprite.userData.isNebula = true;
+        group.add(nebulaSprite);
 
-      const typeCounts: Record<string, number> = {};
-      for (const m of members) typeCounts[m.label] = (typeCounts[m.label] ?? 0) + 1;
-      const dominantType = Object.entries(typeCounts).sort((a, b) => b[1] - a[1])[0][0] as NodeType;
+        // Secondary halo in borderColor
+        const haloSprite = new THREE.Sprite(getGlowSpriteMaterial(style.borderColor, 0.4));
+        haloSprite.scale.set(baseRadius * 2, baseRadius * 2, 1);
+        group.add(haloSprite);
 
-      const shortType = dominantType === 'StructuralPattern' ? 'Pattern'
-        : dominantType === 'FailureRecord' ? 'Failure'
-        : dominantType === 'UserKnowledge' ? 'Knowledge'
-        : dominantType;
+        // Core sphere — bright center
+        const coreMesh = new THREE.Mesh(getCoreSphereGeo(baseRadius * 0.35), getCoreMaterial(fillColor));
+        group.add(coreMesh);
 
-      let cx = 0, cy = 0, posCount = 0;
-      for (const m of members) {
-        if (m.x !== undefined && m.y !== undefined) {
-          cx += m.x; cy += m.y; posCount++;
+      } else if (tier === 2) {
+        // ── Tier 2: Stars (Theory, Concept, FailureRecord, StructuralPattern) ──
+        // Bright star glow
+        const glowSprite = new THREE.Sprite(getGlowSpriteMaterial(fillColor, 0.85));
+        glowSprite.scale.set(baseRadius * 3, baseRadius * 3, 1);
+        group.add(glowSprite);
+
+        // Core sphere
+        const coreMesh = new THREE.Mesh(getCoreSphereGeo(baseRadius * 0.4), getCoreMaterial(fillColor));
+        group.add(coreMesh);
+
+        // Corona for massive stars (mass > 4)
+        if (mass > 4) {
+          const coronaSize = baseRadius * 2.5 + mass * 1;
+          const coronaSprite = new THREE.Sprite(getGlowSpriteMaterial(fillColor, 0.3));
+          coronaSprite.scale.set(coronaSize, coronaSize, 1);
+          group.add(coronaSprite);
         }
+
+        // Theory confidence extra glow — brighter with confidence
+        if (node.label === 'Theory') {
+          const confidence = Number(node.properties.confidence ?? 0.5);
+          const glowSize = baseRadius * 2 + confidence * 5;
+          const opacity = 0.2 + confidence * 0.4;
+          const confSprite = new THREE.Sprite(getGlowSpriteMaterial(style.color, opacity));
+          confSprite.scale.set(glowSize, glowSize, 1);
+          group.add(confSprite);
+        }
+
+      } else {
+        // ── Tier 3: Distant stars (Episode, Contradiction, UserKnowledge) ──
+        // Glow — clone material so per-node opacity fading works
+        const glowMat = getGlowSpriteMaterial(fillColor, 0.6).clone();
+        const glowSprite = new THREE.Sprite(glowMat);
+        glowSprite.scale.set(baseRadius * 2.5, baseRadius * 2.5, 1);
+        glowSprite.userData.isDustGlow = true;
+        group.add(glowSprite);
+
+        // Core sphere — clone material for per-node opacity
+        const coreMat = getCoreMaterial(fillColor).clone();
+        const coreMesh = new THREE.Mesh(getCoreSphereGeo(baseRadius * 0.35), coreMat);
+        coreMesh.userData.isDustCore = true;
+        group.add(coreMesh);
       }
 
-      clusterNodes.push({
-        id: `cluster-${clusterId}`,
-        label: dominantType,
-        name: `${shortType} (${members.length})`,
-        properties: { count: members.length, types: typeCounts },
-        cluster: clusterId,
-        ...(posCount > 0 ? { x: cx / posCount, y: cy / posCount } : {}),
+      return group;
+    },
+    [],
+  );
+
+  // ─────────────────────────────────────────────────────────
+  // Engine tick: lazy init + tier-aware animation + selection ring
+  // ─────────────────────────────────────────────────────────
+  const onEngineTick = useCallback(() => {
+    // Lazy init — runs once the renderer is truly alive
+    initScene();
+    initForces();
+
+    const now = performance.now();
+    const dt = (now - lastTickRef.current) * 0.001;
+    lastTickRef.current = now;
+    timeRef.current += dt;
+    const t = timeRef.current;
+
+    const fg = fgRef.current;
+    if (!fg) return;
+
+    let cam: THREE.Camera | undefined;
+    try { cam = fg.camera() as THREE.Camera; } catch { /* not ready */ }
+
+    if (cam) {
+      const pos = cam.position;
+      cameraDistRef.current = Math.sqrt(pos.x * pos.x + pos.y * pos.y + pos.z * pos.z);
+    }
+
+    // Smooth zoom slider sync via rAF — only schedule one update per frame
+    if (!zoomAnimRef.current) {
+      zoomAnimRef.current = requestAnimationFrame(() => {
+        zoomAnimRef.current = 0;
+        setZoomDist(cameraDistRef.current);
       });
     }
 
-    const clusterLinks: GraphLink[] = [];
-    const linkSet = new Set<string>();
-    for (const l of graphData.links) {
-      const srcId = typeof l.source === 'object' ? (l.source as GraphNode).id : l.source;
-      const tgtId = typeof l.target === 'object' ? (l.target as GraphNode).id : l.target;
-      const srcCluster = memberMap.get(srcId);
-      const tgtCluster = memberMap.get(tgtId);
-      if (srcCluster !== undefined && tgtCluster !== undefined && srcCluster !== tgtCluster) {
-        const key = `${Math.min(srcCluster, tgtCluster)}-${Math.max(srcCluster, tgtCluster)}`;
-        if (!linkSet.has(key)) {
-          linkSet.add(key);
-          clusterLinks.push({
-            source: `cluster-${srcCluster}`,
-            target: `cluster-${tgtCluster}`,
-            type: 'CLUSTER',
-            properties: {},
-          });
+    const camDist = cameraDistRef.current;
+    const selectedId = selectedNodeIdRef.current;
+
+    // Per-node: breathing, tier fading, selection ring
+    (graphData.nodes as any[]).forEach((node: any) => {
+      const obj = node.__threeObj as THREE.Group | undefined;
+      if (!obj) return;
+
+      const tier: VisualTier = obj.userData.tier ?? 3;
+      const phase = obj.userData.breathePhase ?? 0;
+
+      // ── Tier 1: slower/larger nebula pulse ──
+      if (tier === 1) {
+        const breathe = 1 + Math.sin(t * 0.6 + phase) * 0.08;
+        obj.scale.set(breathe, breathe, breathe);
+
+        // Pulse nebula opacity
+        const nebulaChild = obj.children.find((c: THREE.Object3D) => c.userData.isNebula) as THREE.Sprite | undefined;
+        if (nebulaChild?.material) {
+          (nebulaChild.material as THREE.SpriteMaterial).opacity = 0.3 + Math.sin(t * 0.8 + phase) * 0.1;
         }
       }
-    }
+      // ── Tier 2: standard breathe ──
+      else if (tier === 2) {
+        const breathe = 1 + Math.sin(t * 1.2 + phase) * 0.04;
+        obj.scale.set(breathe, breathe, breathe);
+      }
+      // ── Tier 3: zoom-dependent fade ──
+      else {
+        const breathe = 1 + Math.sin(t * 1.2 + phase) * 0.04;
+        obj.scale.set(breathe, breathe, breathe);
 
-    return { nodes: clusterNodes, links: clusterLinks };
-  }, [graphData]);
+        // Fade: full opacity at <=400, dim to minimum at >=2000 (never fully invisible)
+        const fadeFactor = camDist <= 400 ? 1 : camDist >= 2000 ? 0.12 : 0.12 + 0.88 * (1 - (camDist - 400) / 1600);
 
-  const showClusters = zoomLevel < CLUSTER_ZOOM_THRESHOLD && clusterData !== null;
-  const displayData = showClusters ? clusterData! : graphData;
-
-  // ─────────────────────────────────────────────────────────
-  // Pre-render: screen-space star field + world-space fabric
-  // ─────────────────────────────────────────────────────────
-  const paintPre = useCallback(
-    (ctx: CanvasRenderingContext2D, globalScale: number) => {
-      const t = timeRef.current;
-      const canvas = ctx.canvas;
-      const dpr = window.devicePixelRatio || 1;
-      const cw = canvas.width / dpr;
-      const ch = canvas.height / dpr;
-
-      // ── Get current viewport offset for parallax ──
-      // Save current world-space transform, then extract translation
-      const transform = ctx.getTransform();
-      const vpX = -transform.e / transform.a; // graph X at screen left
-      const vpY = -transform.f / transform.d; // graph Y at screen top
-
-      // ── Switch to screen-space for star field ──
-      ctx.save();
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-
-      // Deep space gradient background
-      const bgGrad = ctx.createRadialGradient(cw / 2, ch / 2, 0, cw / 2, ch / 2, Math.max(cw, ch) * 0.7);
-      bgGrad.addColorStop(0, '#080c18');
-      bgGrad.addColorStop(0.5, '#050810');
-      bgGrad.addColorStop(1, '#020408');
-      ctx.fillStyle = bgGrad;
-      ctx.fillRect(0, 0, cw, ch);
-
-      // Render each star layer with parallax offset
-      for (const layer of STAR_LAYERS) {
-        // Parallax: screen position shifts based on viewport position in graph space
-        const px = (vpX * layer.parallaxFactor) % cw;
-        const py = (vpY * layer.parallaxFactor) % ch;
-
-        for (const star of layer.stars) {
-          // Tile star positions across screen, offset by parallax
-          let sx = ((star.x * cw * 2 - px) % cw + cw) % cw;
-          let sy = ((star.y * ch * 2 - py) % ch + ch) % ch;
-
-          // Twinkle: sinusoidal brightness oscillation
-          const twinkle = 0.6 + 0.4 * Math.sin(t * star.twinkleSpeed + star.twinklePhase);
-          const alpha = star.brightness * twinkle;
-
-          const r = star.r;
-
-          if (star.hasDiffraction && r > 0.8) {
-            // ── Realistic star with diffraction spikes ──
-            const spikeLen = r * 5;
-            const coreAlpha = alpha;
-
-            // Soft glow halo
-            const glow = ctx.createRadialGradient(sx, sy, 0, sx, sy, r * 3);
-            glow.addColorStop(0, starColor(star.temperature, coreAlpha * 0.5));
-            glow.addColorStop(0.4, starColor(star.temperature, coreAlpha * 0.15));
-            glow.addColorStop(1, starColor(star.temperature, 0));
-            ctx.beginPath();
-            ctx.arc(sx, sy, r * 3, 0, Math.PI * 2);
-            ctx.fillStyle = glow;
-            ctx.fill();
-
-            // 4-point diffraction cross
-            ctx.strokeStyle = starColor(star.temperature, coreAlpha * 0.4);
-            ctx.lineWidth = 0.5;
-            ctx.beginPath();
-            ctx.moveTo(sx - spikeLen, sy);
-            ctx.lineTo(sx + spikeLen, sy);
-            ctx.moveTo(sx, sy - spikeLen);
-            ctx.lineTo(sx, sy + spikeLen);
-            ctx.stroke();
-
-            // Bright core
-            ctx.beginPath();
-            ctx.arc(sx, sy, r * 0.6, 0, Math.PI * 2);
-            ctx.fillStyle = starColor(star.temperature, coreAlpha);
-            ctx.fill();
-          } else {
-            // ── Simple point star ──
-            ctx.beginPath();
-            ctx.arc(sx, sy, Math.max(r, 0.4), 0, Math.PI * 2);
-            ctx.fillStyle = starColor(star.temperature, alpha);
-            ctx.fill();
+        // Update cloned materials
+        obj.visible = true;
+        for (const child of obj.children) {
+          if (child.userData.isDustGlow && (child as THREE.Sprite).material) {
+            ((child as THREE.Sprite).material as THREE.SpriteMaterial).opacity = 0.6 * fadeFactor;
+          }
+          if (child.userData.isDustCore && (child as THREE.Mesh).material) {
+            ((child as THREE.Mesh).material as THREE.MeshBasicMaterial).opacity = 0.95 * fadeFactor;
           }
         }
       }
 
-      ctx.restore(); // back to world-space
+      // Manage selection ring dynamically
+      const isSelected = node.id === selectedId;
+      const existingRing = obj.children.find((c: THREE.Object3D) => c.userData.isSelectionRing);
 
-      // ── World-space: space-time fabric near massive nodes ──
-      drawSpaceFabric(ctx, graphData.nodes, globalScale);
-    },
-    [graphData.nodes],
-  );
+      if (isSelected && !existingRing) {
+        const baseRadius = obj.userData.baseRadius ?? 6;
+        const ring = new THREE.Mesh(getRingGeo(baseRadius * 1.2, baseRadius * 1.5), selectionRingMaterial);
+        ring.userData.isSelectionRing = true;
+        obj.add(ring);
+      } else if (!isSelected && existingRing) {
+        obj.remove(existingRing);
+      }
+
+      // Make selection rings face camera
+      if (cam && isSelected) {
+        const ring = obj.children.find((c: THREE.Object3D) => c.userData.isSelectionRing);
+        if (ring) ring.lookAt(cam.position);
+      }
+    });
+  }, [graphData, initScene, initForces]);
 
   // ─────────────────────────────────────────────────────────
-  // Node rendering
+  // Link styling
   // ─────────────────────────────────────────────────────────
-  const nodeCanvasObject = useCallback(
-    (node: GraphNode, ctx: CanvasRenderingContext2D, globalScale: number) => {
-      const x = node.x ?? 0;
-      const y = node.y ?? 0;
-      const style = NODE_STYLES[node.label as NodeType] ?? { color: '#6B7280', borderColor: '#9CA3AF' };
-      const isSelected = selectedNode?.id === node.id;
-      const t = timeRef.current;
+  const getLinkColor = useCallback((link: GraphLink) => {
+    const style = LINK_STYLES[link.type] ?? DEFAULT_LINK_STYLE;
+    const { hex } = rgbaToHexAlpha(style.color);
+    return hex;
+  }, []);
 
-      // Breathing: subtle radius oscillation unique to each node
-      const breathe = Math.sin(t * 1.2 + (node.cluster ?? 0) * 0.7) * 0.3;
+  const getLinkWidth = useCallback((link: GraphLink) => {
+    const style = LINK_STYLES[link.type] ?? DEFAULT_LINK_STYLE;
+    if (link.type === 'CAUSES') {
+      const strength = Number(link.properties.strength ?? 1);
+      return 1 + strength * 2;
+    }
+    return style.width;
+  }, []);
 
-      if (showClusters) {
-        const count = Number(node.properties.count ?? 1);
-        const baseRadius = 10 + Math.sqrt(count) * 4;
-        const radius = baseRadius + breathe;
-        const clusterColor = style.color;
+  const getLinkParticles = useCallback((link: GraphLink) => {
+    return link.type === 'CAUSES' ? 3 : 0;
+  }, []);
 
-        // Outer nebula haze
-        const haze = ctx.createRadialGradient(x, y, radius * 0.6, x, y, radius * 2.5);
-        haze.addColorStop(0, clusterColor + '20');
-        haze.addColorStop(0.4, clusterColor + '0A');
-        haze.addColorStop(1, clusterColor + '00');
-        ctx.beginPath();
-        ctx.arc(x, y, radius * 2.5, 0, Math.PI * 2);
-        ctx.fillStyle = haze;
-        ctx.fill();
+  const getLinkParticleColor = useCallback((link: GraphLink) => {
+    return LINK_STYLES[link.type]?.color ?? DEFAULT_LINK_STYLE.color;
+  }, []);
 
-        // Core gradient
-        const grad = ctx.createRadialGradient(x, y, 0, x, y, radius);
-        grad.addColorStop(0, clusterColor + '60');
-        grad.addColorStop(0.7, clusterColor + '25');
-        grad.addColorStop(1, clusterColor + '10');
-        ctx.beginPath();
-        ctx.arc(x, y, radius, 0, Math.PI * 2);
-        ctx.fillStyle = grad;
-        ctx.fill();
-        ctx.strokeStyle = clusterColor + '50';
-        ctx.lineWidth = 1;
-        ctx.stroke();
-
-        // Count label
-        const fontSize = Math.max(12 / globalScale, 3);
-        ctx.font = `bold ${fontSize}px sans-serif`;
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillStyle = '#E5E7EB';
-        ctx.fillText(String(count), x, y);
-
-        // Type label below
-        const labelSize = Math.max(9 / globalScale, 2.5);
-        ctx.font = `${labelSize}px sans-serif`;
-        ctx.textBaseline = 'top';
-        ctx.fillStyle = clusterColor + 'CC';
-        ctx.fillText(node.name, x, y + radius + 3);
-        return;
-      }
-
-      const baseRadius = getNodeRadius(node);
-      const radius = baseRadius + breathe * 0.5;
-      const fillColor = node.label === 'Episode' ? getEpisodeColor(node) : style.color;
-      const mass = getNodeMass(node);
-
-      // Gravitational corona — scaled by node mass
-      if (mass > 2) {
-        const coronaR = radius + mass * 1.8;
-        const corona = ctx.createRadialGradient(x, y, radius * 0.7, x, y, coronaR);
-        corona.addColorStop(0, fillColor + '20');
-        corona.addColorStop(0.5, fillColor + '08');
-        corona.addColorStop(1, fillColor + '00');
-        ctx.beginPath();
-        ctx.arc(x, y, coronaR, 0, Math.PI * 2);
-        ctx.fillStyle = corona;
-        ctx.fill();
-      }
-
-      // Theory: confidence glow (like stellar luminosity class)
-      if (node.label === 'Theory') {
-        const confidence = Number(node.properties.confidence ?? 0.5);
-        const glowRadius = radius + 3 + confidence * 6;
-        const grad = ctx.createRadialGradient(x, y, radius * 0.8, x, y, glowRadius);
-        grad.addColorStop(0, style.color + '35');
-        grad.addColorStop(1, style.color + '00');
-        ctx.beginPath();
-        ctx.arc(x, y, glowRadius, 0, Math.PI * 2);
-        ctx.fillStyle = grad;
-        ctx.fill();
-      }
-
-      // Node circle
-      ctx.beginPath();
-      ctx.arc(x, y, radius, 0, Math.PI * 2);
-      ctx.fillStyle = fillColor + 'CC';
-      ctx.fill();
-
-      // Inner highlight (Fresnel-like rim light from top-left)
-      const highlight = ctx.createRadialGradient(
-        x - radius * 0.3, y - radius * 0.3, radius * 0.1,
-        x, y, radius,
-      );
-      highlight.addColorStop(0, 'rgba(255,255,255,0.15)');
-      highlight.addColorStop(0.6, 'rgba(255,255,255,0)');
-      highlight.addColorStop(1, 'rgba(0,0,0,0.1)');
-      ctx.beginPath();
-      ctx.arc(x, y, radius, 0, Math.PI * 2);
-      ctx.fillStyle = highlight;
-      ctx.fill();
-
-      // Border
-      ctx.strokeStyle = isSelected ? '#FFFFFF' : style.borderColor + '50';
-      ctx.lineWidth = isSelected ? 1.5 : 0.5;
-      ctx.stroke();
-
-      // Selection indicator — dashed orbit ring
-      if (isSelected) {
-        ctx.beginPath();
-        ctx.arc(x, y, radius + 3, 0, Math.PI * 2);
-        ctx.setLineDash([3, 3]);
-        ctx.strokeStyle = '#FFFFFFA0';
-        ctx.lineWidth = 0.8;
-        ctx.stroke();
-        ctx.setLineDash([]);
-      }
-
-      // Labels
-      const showLabel = isSelected || globalScale > 2.5;
-      if (showLabel) {
-        const maxLen = globalScale > 4 ? 20 : 12;
-        const label = node.name.length > maxLen ? node.name.slice(0, maxLen - 1) + '\u2026' : node.name;
-        const fontSize = Math.max(10 / globalScale, 2);
-        ctx.font = `${fontSize}px sans-serif`;
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'top';
-        ctx.fillStyle = isSelected ? '#E5E7EB' : '#9CA3AF';
-        ctx.fillText(label, x, y + radius + 2);
-      }
-    },
-    [selectedNode, showClusters],
-  );
-
-  // ─────────────────────────────────────────────────────────
-  // Link rendering: curved gravitational field lines
-  // ─────────────────────────────────────────────────────────
-  const linkCanvasObject = useCallback(
-    (link: GraphLink, ctx: CanvasRenderingContext2D, globalScale: number) => {
-      const src = link.source as unknown as { x?: number; y?: number };
-      const tgt = link.target as unknown as { x?: number; y?: number };
-      if (src?.x === undefined || src?.y === undefined || tgt?.x === undefined || tgt?.y === undefined) return;
-
-      const linkStyle = LINK_STYLES[link.type] ?? DEFAULT_LINK_STYLE;
-      let width = linkStyle.width;
-
-      if (link.type === 'CAUSES') {
-        const strength = Number(link.properties.strength ?? 1);
-        width = 1 + strength * 2;
-      }
-
-      // Quadratic curve: offset midpoint perpendicular to the line
-      const mx = (src.x + tgt.x) / 2;
-      const my = (src.y + tgt.y) / 2;
-      const dx = tgt.x - src.x;
-      const dy = tgt.y - src.y;
-      const dist = Math.sqrt(dx * dx + dy * dy);
-      if (dist < 0.01) return;
-
-      const curvature = Math.min(dist * 0.08, 15);
-      const cpx = mx + (-dy / dist) * curvature;
-      const cpy = my + (dx / dist) * curvature;
-
-      // Distance-based opacity (inverse-square falloff like gravity)
-      const distFade = Math.max(0.2, 1 / (1 + dist * 0.003));
-
-      ctx.beginPath();
-      if (linkStyle.dashed) {
-        ctx.setLineDash([4 / globalScale, 4 / globalScale]);
-      } else {
-        ctx.setLineDash([]);
-      }
-      ctx.moveTo(src.x, src.y);
-      ctx.quadraticCurveTo(cpx, cpy, tgt.x, tgt.y);
-      ctx.strokeStyle = linkStyle.color.replace(/[\d.]+\)$/, `${distFade})`);
-      ctx.lineWidth = width / Math.max(globalScale * 0.5, 1);
-      ctx.stroke();
-      ctx.setLineDash([]);
-    },
-    [],
-  );
+  // Dashed links via linkMaterial
+  const dashedMaterialCache = useRef(new Map<string, THREE.LineDashedMaterial>());
+  const getLinkMaterial = useCallback((link: GraphLink) => {
+    const style = LINK_STYLES[link.type] ?? DEFAULT_LINK_STYLE;
+    if (!style.dashed) return false;
+    const { hex, alpha } = rgbaToHexAlpha(style.color);
+    const key = `${hex}-${alpha.toFixed(2)}`;
+    let mat = dashedMaterialCache.current.get(key);
+    if (!mat) {
+      mat = new THREE.LineDashedMaterial({
+        color: new THREE.Color(hex),
+        transparent: true,
+        opacity: alpha,
+        dashSize: 3,
+        gapSize: 2,
+        depthWrite: false,
+      });
+      dashedMaterialCache.current.set(key, mat);
+    }
+    return mat;
+  }, []);
 
   // ─────────────────────────────────────────────────────────
   // Click handlers
   // ─────────────────────────────────────────────────────────
   const handleNodeClick = useCallback(
     (node: GraphNode) => {
-      if (showClusters && node.id.startsWith('cluster-')) {
-        const x = node.x ?? 0;
-        const y = node.y ?? 0;
-        fgRef.current?.centerAt(x, y, 0);
-        setTimeout(() => {
-          fgRef.current?.zoom(CLUSTER_ZOOM_THRESHOLD + 1.5, 500);
-        }, 50);
-        onClusterDrillIn?.();
-        return;
-      }
       onNodeClick(node);
-      if (fgRef.current && node.x !== undefined && node.y !== undefined) {
-        fgRef.current.centerAt(node.x, node.y, 0);
-        if (zoomLevel < 4) {
-          setTimeout(() => {
-            fgRef.current?.zoom(5.0, 400);
-          }, 50);
+      const fg = fgRef.current;
+      if (fg && node.x !== undefined && node.y !== undefined) {
+        const nx = node.x;
+        const ny = node.y;
+        const nz = node.z ?? 0;
+        const targetDist = 80;
+
+        let cam: THREE.Camera | undefined;
+        try { cam = fg.camera() as THREE.Camera; } catch { /* */ }
+
+        let dx = 1, dy = 0.5, dz = 1;
+        if (cam) {
+          dx = cam.position.x - nx;
+          dy = cam.position.y - ny;
+          dz = cam.position.z - nz;
+          const len = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1;
+          dx /= len; dy /= len; dz /= len;
+        } else {
+          const len = Math.sqrt(dx * dx + dy * dy + dz * dz);
+          dx /= len; dy /= len; dz /= len;
         }
+
+        fg.cameraPosition(
+          { x: nx + dx * targetDist, y: ny + dy * targetDist, z: nz + dz * targetDist },
+          { x: nx, y: ny, z: nz },
+          1000,
+        );
       }
     },
-    [onNodeClick, onClusterDrillIn, showClusters, zoomLevel],
+    [onNodeClick],
   );
 
-  const handleZoom = useCallback((transform: { k: number }) => {
-    setZoomLevel(transform.k);
+  const getNodeLabel = useCallback((node: GraphNode) => {
+    return `${node.label}: ${node.name}`;
+  }, []);
+
+  // ─────────────────────────────────────────────────────────
+  // Zoom handler — moves camera along current direction vector
+  // ─────────────────────────────────────────────────────────
+  const handleZoom = useCallback((targetDist: number) => {
+    const fg = fgRef.current;
+    if (!fg) return;
+    const clamped = Math.max(ZOOM_MIN_DIST, Math.min(ZOOM_MAX_DIST, targetDist));
+
+    let cam: THREE.Camera | undefined;
+    try { cam = fg.camera() as THREE.Camera; } catch { return; }
+    if (!cam) return;
+
+    const pos = cam.position;
+    const len = Math.sqrt(pos.x * pos.x + pos.y * pos.y + pos.z * pos.z) || 1;
+    const dx = pos.x / len;
+    const dy = pos.y / len;
+    const dz = pos.z / len;
+
+    fg.cameraPosition(
+      { x: dx * clamped, y: dy * clamped, z: dz * clamped },
+      { x: 0, y: 0, z: 0 },
+      0,
+    );
+    cameraDistRef.current = clamped;
+    setZoomDist(clamped);
   }, []);
 
   return (
     <div ref={containerRef} className="flex-1 relative overflow-hidden">
-      {graphData.nodes.length === 0 ? (
-        <div className="absolute inset-0 flex items-center justify-center">
+      <ForceGraph3D
+        ref={fgRef as any}
+        width={dimensions.width}
+        height={dimensions.height}
+        graphData={graphData}
+        nodeId="id"
+        nodeThreeObject={nodeThreeObject}
+        nodeThreeObjectExtend={false}
+        nodeLabel={getNodeLabel}
+        linkColor={getLinkColor}
+        linkWidth={getLinkWidth}
+        linkOpacity={1.0}
+        linkCurvature={0.1}
+        linkMaterial={getLinkMaterial as any}
+        linkDirectionalParticles={getLinkParticles}
+        linkDirectionalParticleWidth={2}
+        linkDirectionalParticleColor={getLinkParticleColor}
+        onNodeClick={handleNodeClick}
+        onBackgroundClick={onBackgroundClick}
+        onEngineTick={onEngineTick}
+        numDimensions={3}
+        cooldownTicks={100}
+        d3AlphaDecay={0.04}
+        d3VelocityDecay={0.55}
+        warmupTicks={50}
+        showNavInfo={false}
+        backgroundColor="#050810"
+        enableNodeDrag={true}
+      />
+      {!hasData && (
+        <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
           <div className="text-center text-gray-600">
             <p className="text-lg mb-2">No graph data loaded</p>
             <p className="text-sm">Connect to Neo4j and load an overview or run a query</p>
           </div>
         </div>
-      ) : (
-        <>
-          <ForceGraph2D
-            ref={fgRef}
-            width={dimensions.width}
-            height={dimensions.height}
-            graphData={displayData}
-            nodeId="id"
-            nodeCanvasObject={nodeCanvasObject}
-            nodePointerAreaPaint={(node: GraphNode, color: string, ctx: CanvasRenderingContext2D) => {
-              const r = showClusters
-                ? 10 + Math.sqrt(Number(node.properties.count ?? 1)) * 4
-                : getNodeRadius(node);
-              ctx.beginPath();
-              ctx.arc(node.x ?? 0, node.y ?? 0, r + 3, 0, Math.PI * 2);
-              ctx.fillStyle = color;
-              ctx.fill();
+      )}
+      {/* ── Zoom Slider (log-scale) ── */}
+      {hasData && (
+        <div
+          className={`absolute top-1/2 -translate-y-1/2 z-10 pointer-events-auto flex flex-col items-center gap-1 transition-all duration-200 ${
+            selectedNode ? 'right-[340px]' : 'right-3'
+          }`}
+          onPointerDown={(e) => e.stopPropagation()}
+        >
+          {/* + button (zoom in) */}
+          <button
+            className="w-7 h-7 rounded bg-gray-900/70 backdrop-blur-sm text-gray-300 hover:text-white hover:bg-gray-800/80 flex items-center justify-center text-sm font-bold border border-gray-700/50 select-none"
+            onClick={() => handleZoom(cameraDistRef.current * 0.8)}
+          >
+            +
+          </button>
+
+          {/* Track */}
+          <div
+            className="relative w-2 rounded-full bg-gray-800/60 backdrop-blur-sm border border-gray-700/40"
+            style={{ height: 200 }}
+            onClick={(e) => {
+              const rect = e.currentTarget.getBoundingClientRect();
+              const pct = (e.clientY - rect.top) / rect.height;
+              handleZoom(sliderPctToDist(pct));
             }}
-            linkCanvasObject={linkCanvasObject}
-            onRenderFramePre={paintPre}
-            onNodeClick={handleNodeClick}
-            onBackgroundClick={onBackgroundClick}
-            onZoom={handleZoom}
-            cooldownTicks={100}
-            d3AlphaDecay={0.04}
-            d3VelocityDecay={0.55}
-            warmupTicks={50}
-            autoPauseRedraw={false}
-            linkDirectionalParticles={(link: GraphLink) => (link.type === 'CAUSES' ? 3 : 0)}
-            linkDirectionalParticleWidth={2}
-            linkDirectionalParticleColor={(link: GraphLink) =>
-              LINK_STYLES[link.type]?.color ?? DEFAULT_LINK_STYLE.color
-            }
-            backgroundColor="transparent"
-            enableNodeDrag={true}
-          />
-          <div className="absolute bottom-4 right-4 text-xs text-gray-600 bg-gray-900/60 px-2 py-1 rounded">
-            {zoomLevel.toFixed(1)}x {showClusters ? '(clusters)' : ''}
+          >
+            {/* Handle */}
+            <div
+              className="absolute left-1/2 -translate-x-1/2 w-4 h-4 rounded-full bg-blue-500 border-2 border-blue-300 shadow-[0_0_8px_rgba(59,130,246,0.6)] cursor-grab active:cursor-grabbing"
+              style={{
+                top: `${distToSliderPct(zoomDist) * 100}%`,
+                transform: 'translate(-50%, -50%)',
+              }}
+              onMouseDown={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const track = e.currentTarget.parentElement!;
+                const onMove = (me: MouseEvent) => {
+                  const rect = track.getBoundingClientRect();
+                  const pct = Math.max(0, Math.min(1, (me.clientY - rect.top) / rect.height));
+                  handleZoom(sliderPctToDist(pct));
+                };
+                const onUp = () => {
+                  document.removeEventListener('mousemove', onMove);
+                  document.removeEventListener('mouseup', onUp);
+                };
+                document.addEventListener('mousemove', onMove);
+                document.addEventListener('mouseup', onUp);
+              }}
+            />
           </div>
-        </>
+
+          {/* - button (zoom out) */}
+          <button
+            className="w-7 h-7 rounded bg-gray-900/70 backdrop-blur-sm text-gray-300 hover:text-white hover:bg-gray-800/80 flex items-center justify-center text-sm font-bold border border-gray-700/50 select-none"
+            onClick={() => handleZoom(cameraDistRef.current * 1.25)}
+          >
+            -
+          </button>
+        </div>
+      )}
+
+      {hasData && (
+        <div className="absolute bottom-4 right-4 text-xs text-gray-600 bg-gray-900/60 px-2 py-1 rounded">
+          {graphData.nodes.length} nodes
+        </div>
       )}
     </div>
   );

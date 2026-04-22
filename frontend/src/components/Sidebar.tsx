@@ -54,9 +54,27 @@ export default function Sidebar({
   return (
     <aside className="w-72 lg:w-80 flex-shrink-0 bg-gray-950 border-r border-gray-800 p-3 lg:p-4 overflow-y-auto flex flex-col gap-3">
       <div className="flex items-center gap-2 mb-1">
-        <div className="w-6 h-6 rounded-full bg-purple-600 flex items-center justify-center">
-          <span className="text-white text-xs font-bold">N</span>
-        </div>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="24" height="24" className="flex-shrink-0">
+          <path d="M16 2.5a13.5 13.5 0 0 1 12.73 9" fill="none" stroke="#8B5CF6" strokeWidth="1.5" strokeLinecap="round" opacity="0.6"/>
+          <path d="M16 29.5a13.5 13.5 0 0 1-12.73-9" fill="none" stroke="#8B5CF6" strokeWidth="1.5" strokeLinecap="round" opacity="0.6"/>
+          <polygon points="28.2,10.5 29.5,12.5 26.5,12" fill="#8B5CF6" opacity="0.6"/>
+          <polygon points="3.8,21.5 2.5,19.5 5.5,20" fill="#8B5CF6" opacity="0.6"/>
+          <line x1="16" y1="16" x2="10" y2="8" stroke="#3B82F6" strokeWidth="1" opacity="0.5"/>
+          <line x1="16" y1="16" x2="23" y2="9" stroke="#F59E0B" strokeWidth="1" opacity="0.5"/>
+          <line x1="16" y1="16" x2="8" y2="22" stroke="#06B6D4" strokeWidth="1" opacity="0.5"/>
+          <line x1="16" y1="16" x2="24" y2="22" stroke="#EC4899" strokeWidth="1" opacity="0.5"/>
+          <line x1="16" y1="16" x2="16" y2="26" stroke="#10B981" strokeWidth="1" opacity="0.5"/>
+          <line x1="10" y1="8" x2="23" y2="9" stroke="#6B7280" strokeWidth="0.5" opacity="0.3"/>
+          <line x1="8" y1="22" x2="16" y2="26" stroke="#6B7280" strokeWidth="0.5" opacity="0.3"/>
+          <line x1="24" y1="22" x2="16" y2="26" stroke="#6B7280" strokeWidth="0.5" opacity="0.3"/>
+          <circle cx="10" cy="8" r="2.5" fill="#3B82F6"/>
+          <circle cx="23" cy="9" r="2.5" fill="#F59E0B"/>
+          <circle cx="8" cy="22" r="2.5" fill="#06B6D4"/>
+          <circle cx="24" cy="22" r="2.5" fill="#EC4899"/>
+          <circle cx="16" cy="26" r="2" fill="#10B981"/>
+          <circle cx="16" cy="16" r="4" fill="#8B5CF6"/>
+          <circle cx="16" cy="16" r="4" fill="none" stroke="#A78BFA" strokeWidth="0.8" opacity="0.7"/>
+        </svg>
         <h1 className="text-sm font-semibold text-gray-100">NeuroSync Graph</h1>
       </div>
 

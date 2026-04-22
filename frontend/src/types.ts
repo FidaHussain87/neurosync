@@ -30,8 +30,10 @@ export interface GraphNode {
   // force-graph internal fields
   x?: number;
   y?: number;
+  z?: number;
   vx?: number;
   vy?: number;
+  vz?: number;
 }
 
 export interface GraphLink {

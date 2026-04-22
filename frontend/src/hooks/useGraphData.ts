@@ -56,7 +56,7 @@ function mergeGraphData(existing: GraphData, incoming: GraphData): GraphData {
     const prev = nodeMap.get(n.id);
     if (prev) {
       // Keep existing force-sim positions, update properties
-      nodeMap.set(n.id, { ...n, x: prev.x, y: prev.y, vx: prev.vx, vy: prev.vy, cluster: prev.cluster });
+      nodeMap.set(n.id, { ...n, x: prev.x, y: prev.y, z: prev.z, vx: prev.vx, vy: prev.vy, vz: prev.vz, cluster: prev.cluster });
     } else {
       nodeMap.set(n.id, n);
     }

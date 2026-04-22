@@ -72,7 +72,6 @@ export default function App() {
         selectedNode={selectedNode}
         onNodeClick={handleNodeClick}
         onBackgroundClick={handleBackgroundClick}
-        onClusterDrillIn={() => setSelectedNode(null)}
         viewResetCount={graph.viewResetCount}
       />
 

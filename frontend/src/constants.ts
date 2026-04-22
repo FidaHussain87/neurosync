@@ -12,13 +12,28 @@ export interface LinkStyle {
   dashed: boolean;
 }
 
+// ── Visual tier system ──
+// Tier 1 = Galaxy Centers (always visible), Tier 2 = Stars (medium distance), Tier 3 = Dust (close only)
+export type VisualTier = 1 | 2 | 3;
+
+export const NODE_TIER: Record<NodeType, VisualTier> = {
+  Session:           1,
+  Theory:            2,
+  Concept:           2,
+  FailureRecord:     2,
+  StructuralPattern: 2,
+  Episode:           3,
+  Contradiction:     3,
+  UserKnowledge:     3,
+};
+
 export const NODE_STYLES: Record<NodeType, NodeStyle> = {
-  Session:          { color: '#3B82F6', size: 10, borderColor: '#60A5FA' },
-  Episode:          { color: '#8B5CF6', size: 6,  borderColor: '#A78BFA' },
-  Theory:           { color: '#F59E0B', size: 8,  borderColor: '#FBBF24' },
-  Concept:          { color: '#10B981', size: 7,  borderColor: '#34D399' },
-  StructuralPattern:{ color: '#EC4899', size: 5,  borderColor: '#F472B6' },
-  FailureRecord:    { color: '#EF4444', size: 7,  borderColor: '#F87171' },
+  Session:          { color: '#3B82F6', size: 20, borderColor: '#60A5FA' },
+  Episode:          { color: '#8B5CF6', size: 7,  borderColor: '#A78BFA' },
+  Theory:           { color: '#F59E0B', size: 12, borderColor: '#FBBF24' },
+  Concept:          { color: '#10B981', size: 10, borderColor: '#34D399' },
+  StructuralPattern:{ color: '#EC4899', size: 9,  borderColor: '#F472B6' },
+  FailureRecord:    { color: '#EF4444', size: 10, borderColor: '#F87171' },
   Contradiction:    { color: '#F97316', size: 6,  borderColor: '#FB923C' },
   UserKnowledge:    { color: '#06B6D4', size: 6,  borderColor: '#22D3EE' },
 };
