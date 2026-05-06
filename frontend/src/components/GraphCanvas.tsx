@@ -316,6 +316,8 @@ export default function GraphCanvas({ graphData, selectedNode, onNodeClick, onBa
       try { controls = fg.controls(); } catch { /* */ }
       if (controls && typeof controls.addEventListener === 'function') {
         controlsAttached.current = true;
+        if ('zoomSpeed' in controls) controls.zoomSpeed = 3;
+        if ('rotateSpeed' in controls) controls.rotateSpeed = 1.5;
         controls.addEventListener('change', () => {
           let cam: THREE.Camera | undefined;
           try { cam = fg.camera() as THREE.Camera; } catch { return; }
@@ -405,7 +407,7 @@ export default function GraphCanvas({ graphData, selectedNode, onNodeClick, onBa
     const count = graphData.nodes.length;
     if (count === 0) return;
 
-    const radius = Math.max(120, count * 4);
+    const radius = Math.max(120, Math.min(400, 80 + count * 0.7));
     const goldenAngle = Math.PI * (3 - Math.sqrt(5));
 
     graphData.nodes.forEach((node, i) => {
@@ -423,7 +425,20 @@ export default function GraphCanvas({ graphData, selectedNode, onNodeClick, onBa
     if (viewResetCount !== prevResetCountRef.current) {
       prevResetCountRef.current = viewResetCount;
       const timer = setTimeout(() => {
-        fgRef.current?.zoomToFit(400, 60);
+        const fg = fgRef.current;
+        if (!fg) return;
+        // Single smooth zoom to a distance that fits the graph
+        const fitDist = Math.max(300, Math.min(800, 200 + count * 1.2));
+        const elevationRad = (36 * Math.PI) / 180;
+        const y = fitDist * Math.sin(elevationRad);
+        const xz = fitDist * Math.cos(elevationRad);
+        fg.cameraPosition(
+          { x: xz, y, z: xz },
+          { x: 0, y: 0, z: 0 },
+          600,
+        );
+        cameraDistRef.current = fitDist;
+        setZoomDist(fitDist);
       }, 800);
       return () => clearTimeout(timer);
     }
@@ -578,8 +593,8 @@ export default function GraphCanvas({ graphData, selectedNode, onNodeClick, onBa
         const breathe = 1 + Math.sin(t * 1.2 + phase) * 0.04;
         obj.scale.set(breathe, breathe, breathe);
 
-        // Fade: full opacity at <=400, dim to minimum at >=2000 (never fully invisible)
-        const fadeFactor = camDist <= 400 ? 1 : camDist >= 2000 ? 0.12 : 0.12 + 0.88 * (1 - (camDist - 400) / 1600);
+        // Fade: full opacity at <=800, dim to minimum at >=3000 (always remain visible)
+        const fadeFactor = camDist <= 800 ? 1 : camDist >= 3000 ? 0.5 : 0.5 + 0.5 * (1 - (camDist - 800) / 2200);
 
         // Update cloned materials
         obj.visible = true;
@@ -695,6 +710,13 @@ export default function GraphCanvas({ graphData, selectedNode, onNodeClick, onBa
           { x: nx, y: ny, z: nz },
           1000,
         );
+
+        // Update OrbitControls target so the node stays centered
+        let controls: any;
+        try { controls = fg.controls(); } catch { /* */ }
+        if (controls && controls.target) {
+          controls.target.set(nx, ny, nz);
+        }
       }
     },
     [onNodeClick],

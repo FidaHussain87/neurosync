@@ -104,6 +104,39 @@ class NeuroSyncConfig:
         overrides.pop("pg_dsn", None)
         return cls(**{k: v for k, v in overrides.items() if k in cls.__dataclass_fields__})
 
+    def validate(self) -> list[str]:
+        """Validate configuration values. Returns a list of error messages (empty = valid)."""
+        errors: list[str] = []
+        if self.db_backend not in ("sqlite", "postgresql"):
+            errors.append(
+                f"Invalid db_backend '{self.db_backend}'. Must be 'sqlite' or 'postgresql'."
+            )
+        if self.db_backend == "postgresql" and (not self.pg_dsn or "://" not in self.pg_dsn):
+            errors.append(
+                "PostgreSQL backend requires a valid NEUROSYNC_PG_DSN "
+                "(e.g. postgresql://user:pass@host:5432/dbname)."
+            )
+        if self.db_backend == "sqlite":
+            parent = os.path.dirname(self.sqlite_path)
+            if parent and not os.access(parent, os.W_OK) and os.path.exists(parent):
+                errors.append(
+                    f"SQLite path parent directory '{parent}' is not writable."
+                )
+        if self.recall_max_tokens < 1 or self.recall_max_tokens > 100_000:
+            errors.append(
+                f"recall_max_tokens must be 1–100,000 (got {self.recall_max_tokens})."
+            )
+        if self.consolidation_min_episodes < 2:
+            errors.append(
+                f"consolidation_min_episodes must be >= 2 (got {self.consolidation_min_episodes})."
+            )
+        if not (0.0 < self.consolidation_similarity_threshold <= 1.0):
+            errors.append(
+                f"consolidation_similarity_threshold must be in (0.0, 1.0] "
+                f"(got {self.consolidation_similarity_threshold})."
+            )
+        return errors
+
     def ensure_dirs(self) -> None:
         """Create data directories if they don't exist."""
         try:

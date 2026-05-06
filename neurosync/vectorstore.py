@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Any, Optional
+import os
+import shutil
+from typing import TYPE_CHECKING, Any, Optional
+
+if TYPE_CHECKING:
+    from neurosync.db import Database
 
 import chromadb
 from chromadb.config import Settings
@@ -25,7 +30,19 @@ class VectorStore:
 
     def __init__(self, config: NeuroSyncConfig) -> None:
         self._config = config
+        self._recovered = False
         config.ensure_dirs()
+        try:
+            self._init_client(config)
+        except Exception as first_err:
+            logger.warning("ChromaDB init failed: %s — attempting recovery", first_err)
+            self._attempt_recovery(config)
+            self._init_client(config)
+            self._recovered = True
+            logger.info("ChromaDB recovered successfully after re-creation")
+
+    def _init_client(self, config: NeuroSyncConfig) -> None:
+        """Initialize the ChromaDB client and collections."""
         client = chromadb.PersistentClient(
             path=config.chroma_path,
             settings=Settings(anonymized_telemetry=False, allow_reset=True),
@@ -42,11 +59,19 @@ class VectorStore:
             name=FAILURE_COLLECTION,
             metadata={"hnsw:space": "cosine"},
         )
-        # Atomic commit — all collections created before assigning
         self._client = client
         self._episodes = episodes
         self._theories = theories
         self._failures = failures
+
+    def _attempt_recovery(self, config: NeuroSyncConfig) -> None:
+        """Move corrupted ChromaDB directory aside and let re-init create a fresh one."""
+        corrupted_path = config.chroma_path + ".corrupted"
+        if os.path.exists(config.chroma_path):
+            if os.path.exists(corrupted_path):
+                shutil.rmtree(corrupted_path, ignore_errors=True)
+            os.rename(config.chroma_path, corrupted_path)
+        os.makedirs(config.chroma_path, exist_ok=True)
 
     @property
     def episodes_collection(self) -> chromadb.Collection:
@@ -246,11 +271,146 @@ class VectorStore:
             )
         return items
 
+    def reindex_from_db(self, db: Database, project: str = "") -> dict[str, int]:
+        """Re-populate ChromaDB from the SQLite source of truth.
+
+        Reads all non-decayed episodes (consolidated=0 or 1), all active
+        theories, and all failure records from the database and upserts them
+        into ChromaDB collections in batches.
+
+        Args:
+            db: A Database instance (from neurosync.db).
+            project: Optional project name for episode metadata.
+
+        Returns:
+            A summary dict with counts of indexed items.
+        """
+        summary = {"episodes": 0, "theories": 0, "failures": 0}
+        batch_size = 200
+
+        # --- Episodes (consolidated=0 and consolidated=1, skip decayed=2) ---
+        for consolidated_val in (0, 1):
+            all_episodes = db.list_episodes(consolidated=consolidated_val, limit=100000)
+            ids: list[str] = []
+            documents: list[str] = []
+            metadatas: list[dict[str, Any]] = []
+            for ep in all_episodes:
+                if not ep.content.strip():
+                    continue
+                metadata: dict[str, Any] = {
+                    "session_id": ep.session_id,
+                    "event_type": ep.event_type,
+                    "project": project,
+                    "signal_weight": ep.signal_weight,
+                    "timestamp": ep.timestamp,
+                }
+                if ep.cause:
+                    metadata["has_causal"] = 1
+                if ep.quality_score is not None:
+                    metadata["quality_score"] = ep.quality_score
+                if ep.structural_fingerprint:
+                    metadata["structural_fingerprint"] = ep.structural_fingerprint
+                ids.append(ep.id)
+                documents.append(self._safe_document(ep.content))
+                metadatas.append(metadata)
+            # Batch upsert
+            for i in range(0, len(ids), batch_size):
+                self._episodes.upsert(
+                    ids=ids[i : i + batch_size],
+                    documents=documents[i : i + batch_size],
+                    metadatas=metadatas[i : i + batch_size],
+                )
+            summary["episodes"] += len(ids)
+
+        # --- Theories (active only) ---
+        all_theories = db.list_theories(active_only=True, limit=100000)
+        ids = []
+        documents = []
+        metadatas = []
+        for theory in all_theories:
+            if not theory.content.strip():
+                continue
+            meta: dict[str, Any] = {
+                "scope": theory.scope,
+                "scope_qualifier": theory.scope_qualifier,
+                "confidence": theory.confidence,
+                "active": 1 if theory.active else 0,
+                "validation_status": theory.validation_status,
+                "application_count": theory.application_count,
+            }
+            if theory.structural_fingerprint:
+                meta["structural_fingerprint"] = theory.structural_fingerprint
+            ids.append(theory.id)
+            documents.append(self._safe_document(theory.content))
+            metadatas.append(meta)
+        for i in range(0, len(ids), batch_size):
+            self._theories.upsert(
+                ids=ids[i : i + batch_size],
+                documents=documents[i : i + batch_size],
+                metadatas=metadatas[i : i + batch_size],
+            )
+        summary["theories"] = len(ids)
+
+        # --- Failure records ---
+        all_failures = db.list_failure_records(min_severity=1, limit=100000)
+        ids = []
+        documents = []
+        metadatas = []
+        for record in all_failures:
+            content = f"{record.what_failed} {record.why_failed}".strip()
+            if not content:
+                continue
+            record_id = str(record.id) if record.id is not None else ""
+            if not record_id:
+                continue
+            ids.append(record_id)
+            documents.append(self._safe_document(content))
+            metadatas.append(
+                {
+                    "category": record.category,
+                    "project": record.project,
+                    "severity": record.severity,
+                    "what_worked": record.what_worked,
+                }
+            )
+        for i in range(0, len(ids), batch_size):
+            self._failures.upsert(
+                ids=ids[i : i + batch_size],
+                documents=documents[i : i + batch_size],
+                metadatas=metadatas[i : i + batch_size],
+            )
+        summary["failures"] = len(ids)
+
+        logger.info(
+            "Reindex complete: %d episodes, %d theories, %d failures",
+            summary["episodes"],
+            summary["theories"],
+            summary["failures"],
+        )
+        return summary
+
     def stats(self) -> dict[str, int]:
         return {
             "episodes": self._episodes.count(),
             "theories": self._theories.count(),
             "failures": self._failures.count(),
+        }
+
+    def integrity_check(self, db_episode_count: int = 0, db_theory_count: int = 0) -> dict[str, Any]:
+        """Compare ChromaDB counts against source-of-truth DB counts to detect drift."""
+        chroma_episodes = self._episodes.count()
+        chroma_theories = self._theories.count()
+        episode_drift = abs(db_episode_count - chroma_episodes)
+        theory_drift = abs(db_theory_count - chroma_theories)
+        healthy = episode_drift == 0 and theory_drift == 0
+        return {
+            "healthy": healthy,
+            "chroma_episodes": chroma_episodes,
+            "chroma_theories": chroma_theories,
+            "db_episodes": db_episode_count,
+            "db_theories": db_theory_count,
+            "episode_drift": episode_drift,
+            "theory_drift": theory_drift,
         }
 
     def reset(self) -> None:

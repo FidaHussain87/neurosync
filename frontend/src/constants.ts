@@ -63,7 +63,7 @@ export const PREBUILT_QUERIES: PrebuiltQuery[] = [
     name: 'theory_network',
     description: 'All active theories and their relationships',
     cypher: `MATCH (t:Theory {active: true})
-OPTIONAL MATCH (t)-[r:RELATED_TO|PARENT_OF|SUPERSEDED_BY]->(t2:Theory)
+OPTIONAL MATCH (t)-[r:RELATED_TO|PARENT_OF|SUPERSEDED_BY]->(t2:Theory {active: true})
 RETURN t, r, t2`,
   },
   {

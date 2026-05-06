@@ -27,7 +27,7 @@ from neurosync.models import (
 
 logger = get_logger("pg_db")
 
-CURRENT_SCHEMA_VERSION = 5
+CURRENT_SCHEMA_VERSION = 8
 
 # PostgreSQL schema — uses SERIAL instead of AUTOINCREMENT, BOOLEAN instead of
 # INTEGER for booleans, and native JSON handling.
@@ -195,6 +195,70 @@ CREATE TABLE IF NOT EXISTS entity_fingerprints (
 );
 CREATE INDEX IF NOT EXISTS idx_efp_pattern ON entity_fingerprints(pattern);
 CREATE INDEX IF NOT EXISTS idx_efp_entity ON entity_fingerprints(entity_id, entity_type);
+
+CREATE TABLE IF NOT EXISTS audit_log (
+    id SERIAL PRIMARY KEY,
+    timestamp TEXT NOT NULL,
+    entity_type TEXT NOT NULL,
+    entity_id TEXT NOT NULL,
+    action TEXT NOT NULL,
+    field_name TEXT DEFAULT '',
+    old_value TEXT DEFAULT '',
+    new_value TEXT DEFAULT '',
+    context TEXT DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_audit_entity ON audit_log(entity_type, entity_id);
+CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_log(timestamp);
+
+CREATE TABLE IF NOT EXISTS theory_versions (
+    id SERIAL PRIMARY KEY,
+    theory_id TEXT NOT NULL REFERENCES theories(id),
+    version_number INTEGER NOT NULL,
+    content TEXT NOT NULL DEFAULT '',
+    confidence REAL DEFAULT 0.5,
+    confirmation_count INTEGER DEFAULT 0,
+    contradiction_count INTEGER DEFAULT 0,
+    validation_status TEXT DEFAULT 'unvalidated',
+    scope TEXT DEFAULT 'craft',
+    scope_qualifier TEXT DEFAULT '',
+    active BOOLEAN DEFAULT TRUE,
+    source_episodes JSONB DEFAULT '[]',
+    created_at TEXT NOT NULL,
+    action TEXT DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_tv_theory ON theory_versions(theory_id);
+CREATE INDEX IF NOT EXISTS idx_tv_version ON theory_versions(theory_id, version_number);
+
+CREATE TABLE IF NOT EXISTS insights (
+    id TEXT PRIMARY KEY,
+    insight_type TEXT NOT NULL,
+    category TEXT NOT NULL DEFAULT '',
+    content TEXT NOT NULL DEFAULT '',
+    evidence JSONB DEFAULT '[]',
+    confidence REAL DEFAULT 0.5,
+    staleness_days REAL DEFAULT 0.0,
+    project TEXT DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    expires_at TEXT,
+    surfaced_count INTEGER DEFAULT 0,
+    dismissed BOOLEAN DEFAULT FALSE,
+    metadata JSONB DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_insights_type ON insights(insight_type);
+CREATE INDEX IF NOT EXISTS idx_insights_project ON insights(project);
+CREATE INDEX IF NOT EXISTS idx_insights_confidence ON insights(confidence);
+
+CREATE TABLE IF NOT EXISTS developer_profile (
+    id SERIAL PRIMARY KEY,
+    profile_key TEXT NOT NULL UNIQUE,
+    profile_value TEXT NOT NULL DEFAULT '',
+    computed_at TEXT NOT NULL,
+    observation_count INTEGER DEFAULT 0,
+    confidence REAL DEFAULT 0.5,
+    metadata JSONB DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_devprofile_key ON developer_profile(profile_key);
 """
 
 
@@ -314,15 +378,17 @@ class PostgresDatabase:
             with conn.cursor() as cur:
                 # Check if schema_version table exists
                 cur.execute(
-                    "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_name='schema_version')"
+                    "SELECT EXISTS(SELECT 1 FROM information_schema.tables"
+                    " WHERE table_name='schema_version')"
                 )
                 exists = cur.fetchone()[0]
 
                 if exists:
                     cur.execute("SELECT version FROM schema_version")
                     row = cur.fetchone()
-                    if row and row[0] < CURRENT_SCHEMA_VERSION:
-                        # Migrations would go here — for now, fresh installs only
+                    current_version = row[0] if row else 0
+                    if current_version < CURRENT_SCHEMA_VERSION:
+                        self._run_migrations(cur, current_version)
                         cur.execute(
                             "UPDATE schema_version SET version = %s",
                             (CURRENT_SCHEMA_VERSION,),
@@ -343,6 +409,101 @@ class PostgresDatabase:
             raise
         finally:
             self._put_conn(conn)
+
+    def _run_migrations(self, cur: Any, from_version: int) -> None:
+        """Run incremental schema migrations."""
+        if from_version < 6:
+            cur.execute(
+                """CREATE TABLE IF NOT EXISTS audit_log (
+                    id SERIAL PRIMARY KEY,
+                    timestamp TEXT NOT NULL,
+                    entity_type TEXT NOT NULL,
+                    entity_id TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    field_name TEXT DEFAULT '',
+                    old_value TEXT DEFAULT '',
+                    new_value TEXT DEFAULT '',
+                    context TEXT DEFAULT ''
+                )"""
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_audit_entity"
+                " ON audit_log(entity_type, entity_id)"
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_audit_timestamp"
+                " ON audit_log(timestamp)"
+            )
+        if from_version < 7:
+            cur.execute(
+                """CREATE TABLE IF NOT EXISTS theory_versions (
+                    id SERIAL PRIMARY KEY,
+                    theory_id TEXT NOT NULL REFERENCES theories(id),
+                    version_number INTEGER NOT NULL,
+                    content TEXT NOT NULL DEFAULT '',
+                    confidence REAL DEFAULT 0.5,
+                    confirmation_count INTEGER DEFAULT 0,
+                    contradiction_count INTEGER DEFAULT 0,
+                    validation_status TEXT DEFAULT 'unvalidated',
+                    scope TEXT DEFAULT 'craft',
+                    scope_qualifier TEXT DEFAULT '',
+                    active BOOLEAN DEFAULT TRUE,
+                    source_episodes JSONB DEFAULT '[]',
+                    created_at TEXT NOT NULL,
+                    action TEXT DEFAULT ''
+                )"""
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_tv_theory"
+                " ON theory_versions(theory_id)"
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_tv_version"
+                " ON theory_versions(theory_id, version_number)"
+            )
+        if from_version < 8:
+            cur.execute(
+                """CREATE TABLE IF NOT EXISTS insights (
+                    id TEXT PRIMARY KEY,
+                    insight_type TEXT NOT NULL,
+                    category TEXT NOT NULL DEFAULT '',
+                    content TEXT NOT NULL DEFAULT '',
+                    evidence JSONB DEFAULT '[]',
+                    confidence REAL DEFAULT 0.5,
+                    staleness_days REAL DEFAULT 0.0,
+                    project TEXT DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    expires_at TEXT,
+                    surfaced_count INTEGER DEFAULT 0,
+                    dismissed BOOLEAN DEFAULT FALSE,
+                    metadata JSONB DEFAULT '{}'
+                )"""
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_insights_type ON insights(insight_type)"
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_insights_project ON insights(project)"
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_insights_confidence ON insights(confidence)"
+            )
+            cur.execute(
+                """CREATE TABLE IF NOT EXISTS developer_profile (
+                    id SERIAL PRIMARY KEY,
+                    profile_key TEXT NOT NULL UNIQUE,
+                    profile_value TEXT NOT NULL DEFAULT '',
+                    computed_at TEXT NOT NULL,
+                    observation_count INTEGER DEFAULT 0,
+                    confidence REAL DEFAULT 0.5,
+                    metadata JSONB DEFAULT '{}'
+                )"""
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_devprofile_key"
+                " ON developer_profile(profile_key)"
+            )
 
     def close(self) -> None:
         if self._pool:
@@ -490,6 +651,36 @@ class PostgresDatabase:
             params,
         )
         return [self._row_to_episode(r) for r in rows]
+
+    def list_episodes_lightweight(
+        self,
+        columns: list[str],
+        limit: int = 2000,
+    ) -> list[dict[str, Any]]:
+        """Fetch episodes with only the specified columns (for analytics)."""
+        allowed = {
+            "id", "session_id", "event_type", "timestamp", "signal_weight",
+            "quality_score", "files_touched", "layers_touched", "consolidated",
+        }
+        safe_cols = [c for c in columns if c in allowed]
+        if not safe_cols:
+            return []
+        col_str = ", ".join(safe_cols)
+        rows = self._query(
+            f"SELECT {col_str} FROM episodes ORDER BY timestamp DESC LIMIT %s",
+            (limit,),
+        )
+        results = []
+        for row in rows:
+            d = dict(row)
+            if "files_touched" in d and isinstance(d["files_touched"], str):
+                import json as _json
+                try:
+                    d["files_touched"] = _json.loads(d["files_touched"])
+                except (ValueError, TypeError):
+                    d["files_touched"] = []
+            results.append(d)
+        return results
 
     def count_episodes(self, consolidated: Optional[int] = None) -> int:
         if consolidated is not None:
@@ -861,6 +1052,89 @@ class PostgresDatabase:
         )
         return [self._row_to_theory(r) for r in rows]
 
+    # --- Theory Versioning ---
+
+    def save_theory_version(self, theory: Theory, action: str = "") -> int:
+        """Snapshot current theory state before mutation. Returns version number."""
+        row = self._query_one(
+            "SELECT COALESCE(MAX(version_number), 0) AS max_v FROM theory_versions WHERE theory_id = %s",
+            (theory.id,),
+        )
+        next_version = (row["max_v"] if row else 0) + 1
+        self._execute(
+            """INSERT INTO theory_versions
+               (theory_id, version_number, content, confidence,
+                confirmation_count, contradiction_count, validation_status,
+                scope, scope_qualifier, active, source_episodes, created_at, action)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+            (
+                theory.id,
+                next_version,
+                theory.content,
+                theory.confidence,
+                theory.confirmation_count,
+                theory.contradiction_count,
+                theory.validation_status,
+                theory.scope,
+                theory.scope_qualifier,
+                theory.active,
+                self._to_json(theory.source_episodes),
+                _utcnow(),
+                action,
+            ),
+        )
+        return next_version
+
+    def get_theory_versions(self, theory_id: str, limit: int = 20) -> list[dict[str, Any]]:
+        """Get version history for a theory, most recent first."""
+        rows = self._query(
+            """SELECT * FROM theory_versions
+               WHERE theory_id = %s
+               ORDER BY version_number DESC LIMIT %s""",
+            (theory_id, limit),
+        )
+        return [
+            {
+                "version_number": r["version_number"],
+                "content": r["content"],
+                "confidence": r["confidence"],
+                "confirmation_count": r["confirmation_count"],
+                "contradiction_count": r["contradiction_count"],
+                "validation_status": r["validation_status"],
+                "scope": r["scope"],
+                "scope_qualifier": r["scope_qualifier"],
+                "active": bool(r["active"]),
+                "source_episodes": self._from_json(r["source_episodes"], []),
+                "created_at": r["created_at"],
+                "action": r["action"],
+            }
+            for r in rows
+        ]
+
+    def rollback_theory(self, theory_id: str, version_number: int) -> Optional[Theory]:
+        """Restore a theory to a previous version. Snapshots current state first."""
+        theory = self.get_theory(theory_id)
+        if not theory:
+            return None
+        row = self._query_one(
+            "SELECT * FROM theory_versions WHERE theory_id = %s AND version_number = %s",
+            (theory_id, version_number),
+        )
+        if not row:
+            return None
+        self.save_theory_version(theory, action="pre-rollback")
+        theory.content = row["content"]
+        theory.confidence = row["confidence"]
+        theory.confirmation_count = row["confirmation_count"]
+        theory.contradiction_count = row["contradiction_count"]
+        theory.validation_status = row["validation_status"]
+        theory.scope = row["scope"]
+        theory.scope_qualifier = row["scope_qualifier"]
+        theory.active = bool(row["active"])
+        theory.source_episodes = self._from_json(row["source_episodes"], [])
+        self.save_theory(theory)
+        return theory
+
     # --- Causal Links ---
 
     def save_causal_link(self, link: CausalLink) -> CausalLink:
@@ -1223,6 +1497,265 @@ class PostgresDatabase:
             created_at=row["created_at"],
             last_seen=row["last_seen"],
         )
+
+    # --- Audit Log ---
+
+    def audit(
+        self,
+        entity_type: str,
+        entity_id: str,
+        action: str,
+        field_name: str = "",
+        old_value: str = "",
+        new_value: str = "",
+        context: str = "",
+    ) -> None:
+        """Record an audit trail entry for entity changes."""
+        self._execute(
+            """INSERT INTO audit_log
+               (timestamp, entity_type, entity_id, action,
+                field_name, old_value, new_value, context)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+            (
+                _utcnow(),
+                entity_type,
+                entity_id,
+                action,
+                field_name,
+                old_value,
+                new_value,
+                context,
+            ),
+        )
+
+    def get_audit_log(
+        self,
+        entity_type: str = "",
+        entity_id: str = "",
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """Retrieve audit log entries."""
+        clauses: list[str] = []
+        params: list[Any] = []
+        if entity_type:
+            clauses.append("entity_type = %s")
+            params.append(entity_type)
+        if entity_id:
+            clauses.append("entity_id = %s")
+            params.append(entity_id)
+        where = " AND ".join(clauses) if clauses else "TRUE"
+        params.append(limit)
+        return self._query(
+            f"SELECT * FROM audit_log WHERE {where}"
+            " ORDER BY timestamp DESC LIMIT %s",
+            params,
+        )
+
+    # --- Schema Downgrade ---
+
+    def _rollback_migrations(
+        self, cur: Any, from_version: int, to_version: int
+    ) -> None:
+        """Run schema rollbacks from from_version down to to_version (exclusive).
+
+        Supports v7->v6 and v6->v5.
+        """
+        if from_version >= 7 and to_version < 7:
+            cur.execute("DROP INDEX IF EXISTS idx_tv_version")
+            cur.execute("DROP INDEX IF EXISTS idx_tv_theory")
+            cur.execute("DROP TABLE IF EXISTS theory_versions")
+
+        if from_version >= 6 and to_version < 6:
+            cur.execute("DROP INDEX IF EXISTS idx_audit_timestamp")
+            cur.execute("DROP INDEX IF EXISTS idx_audit_entity")
+            cur.execute("DROP TABLE IF EXISTS audit_log")
+
+        cur.execute("UPDATE schema_version SET version = %s", (to_version,))
+
+    def downgrade(self, target_version: int) -> None:
+        """Downgrade the schema to target_version.
+
+        Validates the version range and runs rollbacks in reverse order.
+        Only supports downgrade to version 5 currently.
+        """
+        if target_version < 5:
+            raise ValueError(
+                f"Cannot downgrade below version 5. Requested: {target_version}"
+            )
+        if target_version >= CURRENT_SCHEMA_VERSION:
+            raise ValueError(
+                f"Target version {target_version} is not below current version"
+                f" {CURRENT_SCHEMA_VERSION}"
+            )
+
+        conn = self._get_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT version FROM schema_version")
+                row = cur.fetchone()
+                current = row[0] if row else CURRENT_SCHEMA_VERSION
+
+                if target_version >= current:
+                    raise ValueError(
+                        f"Target version {target_version} is not below current"
+                        f" schema version {current}"
+                    )
+
+                self._rollback_migrations(cur, current, target_version)
+                conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            self._put_conn(conn)
+
+    # --- Orphan Session Detection ---
+
+    def close_orphaned_sessions(self, max_age_hours: int = 24) -> list[str]:
+        """Find and close sessions with ended_at=NULL older than max_age_hours."""
+        rows = self._query(
+            """SELECT id FROM sessions
+               WHERE ended_at IS NULL
+               AND started_at::timestamptz < NOW() - make_interval(hours => %s)""",
+            (max_age_hours,),
+        )
+        orphan_ids = [r["id"] for r in rows]
+        if orphan_ids:
+            now = _utcnow()
+            self._execute(
+                """UPDATE sessions
+                   SET ended_at = %s, summary = '[auto-closed: orphaned session]'
+                   WHERE id = ANY(%s)""",
+                (now, orphan_ids),
+            )
+        return orphan_ids
+
+    # --- Intelligence Layer ---
+
+    def upsert_insight(self, insight: Any) -> None:
+        """Insert or update an insight."""
+        self._execute(
+            """INSERT INTO insights
+               (id, insight_type, category, content, evidence, confidence,
+                staleness_days, project, created_at, updated_at, expires_at,
+                surfaced_count, dismissed, metadata)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+               ON CONFLICT(id) DO UPDATE SET
+                content = EXCLUDED.content,
+                confidence = EXCLUDED.confidence,
+                updated_at = EXCLUDED.updated_at,
+                evidence = EXCLUDED.evidence,
+                metadata = EXCLUDED.metadata,
+                staleness_days = EXCLUDED.staleness_days""",
+            (
+                insight.id,
+                insight.insight_type,
+                insight.category,
+                insight.content,
+                self._to_json(insight.evidence),
+                insight.confidence,
+                insight.staleness_days,
+                insight.project,
+                insight.created_at,
+                insight.updated_at,
+                insight.expires_at or None,
+                insight.surfaced_count,
+                insight.dismissed,
+                self._to_json(insight.metadata),
+            ),
+        )
+
+    def list_insights(
+        self,
+        min_confidence: float = 0.0,
+        dismissed: bool = False,
+        insight_type: str = "",
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """List insights matching criteria."""
+        clauses = ["confidence >= %s"]
+        params: list[Any] = [min_confidence]
+        if not dismissed:
+            clauses.append("dismissed = FALSE")
+        if insight_type:
+            clauses.append("insight_type = %s")
+            params.append(insight_type)
+        where = " AND ".join(clauses)
+        params.append(limit)
+        rows = self._query(
+            f"SELECT * FROM insights WHERE {where} ORDER BY confidence DESC LIMIT %s",
+            tuple(params),
+        )
+        return [dict(r) for r in rows]
+
+    def delete_expired_insights(self) -> int:
+        """Delete insights whose expires_at has passed. Returns count deleted."""
+        now = _utcnow()
+        conn = self._get_conn()
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                "DELETE FROM insights WHERE expires_at IS NOT NULL AND expires_at < %s",
+                (now,),
+            )
+            count = cur.rowcount
+            conn.commit()
+            return count
+        finally:
+            cur.close()
+
+    def increment_insight_surfaced(self, insight_id: str) -> None:
+        self._execute(
+            "UPDATE insights SET surfaced_count = surfaced_count + 1 WHERE id = %s",
+            (insight_id,),
+        )
+
+    def dismiss_insight(self, insight_id: str) -> None:
+        self._execute(
+            "UPDATE insights SET dismissed = TRUE WHERE id = %s",
+            (insight_id,),
+        )
+
+    def count_insights(self) -> int:
+        row = self._query_one("SELECT COUNT(*) AS cnt FROM insights WHERE dismissed = FALSE")
+        return row["cnt"] if row else 0
+
+    def upsert_developer_profile(
+        self,
+        key: str,
+        value: Any,
+        observation_count: int = 0,
+        confidence: float = 0.5,
+    ) -> None:
+        import json as _json
+
+        self._execute(
+            """INSERT INTO developer_profile
+               (profile_key, profile_value, computed_at, observation_count, confidence)
+               VALUES (%s, %s, %s, %s, %s)
+               ON CONFLICT(profile_key) DO UPDATE SET
+                profile_value = EXCLUDED.profile_value,
+                computed_at = EXCLUDED.computed_at,
+                observation_count = EXCLUDED.observation_count,
+                confidence = EXCLUDED.confidence""",
+            (key, _json.dumps(value), _utcnow(), observation_count, confidence),
+        )
+
+    def list_developer_profile(self) -> list[dict[str, Any]]:
+        import json as _json
+
+        rows = self._query(
+            "SELECT * FROM developer_profile ORDER BY profile_key"
+        )
+        results = []
+        for row in rows:
+            d = dict(row)
+            try:
+                d["profile_value"] = _json.loads(d.get("profile_value", "null"))
+            except (TypeError, ValueError):
+                pass
+            results.append(d)
+        return results
 
     # --- Stats ---
 

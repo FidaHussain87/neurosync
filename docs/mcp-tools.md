@@ -2,47 +2,49 @@
 
 ## neurosync_recall
 
-Retrieve relevant context at session start. Uses RetrievalPipeline with winner-take-all scoring and UserModel familiarity filtering.
+Retrieve relevant context at session start. Uses RetrievalPipeline with winner-take-all scoring and UserModel familiarity filtering. Enriched with intelligence insights.
 
 **Parameters:**
 - `project` (string, optional) — Auto-detected from git if omitted
 - `branch` (string, optional) — Auto-detected from git if omitted
-- `context` (string, optional) — Additional context for retrieval
+- `context` (string, optional, max 10K chars) — Additional context for retrieval
 - `max_tokens` (integer, default: 500) — Maximum output tokens
 
-**Returns:** Primary theory, supporting theories, recent episodes, continuation (if any), tokens used.
+**Returns:** Primary theory, supporting theories, recent episodes, continuation (if any), cross-project theories, tokens used, `insights` array (from intelligence layer).
 
 ## neurosync_record
 
-Record session episodes at session end. Computes all applicable signal types for each event.
+Record session episodes at session end. Computes all applicable signal types for each event. Triggers non-blocking background consolidation and returns proactive intelligence warnings.
 
 **Parameters:**
-- `events` (array, required) — Events to record. Each: `{type, content, cause?, effect?, reasoning?, files?, layers?, importance?}`
-- `session_summary` (string, optional) — Summary of the session
+- `events` (array, required, max 100) — Events to record. Each: `{type, content, cause?, effect?, reasoning?, files?, layers?, importance?}`
+- `session_summary` (string, optional, max 50K chars) — Summary of the session
 - `project` (string, optional)
 - `branch` (string, optional)
 - `explicit_remember` (array of strings, optional) — High-weight memories (10x)
 
 **Event types:** decision, discovery, correction, pattern, frustration, question, file_change, architecture, debugging, explicit, causal, observed
 
+**Returns:** Episode count, auto-consolidation result (if triggered), `proactive_warnings` array (fatigue alerts, session rhythm insights).
+
 ## neurosync_remember
 
 Explicitly remember something with high signal weight (x10).
 
 **Parameters:**
-- `content` (string, required) — What to remember
+- `content` (string, required, max 50K chars) — What to remember
 - `type` (string, default: "explicit") — Event type
 - `importance` (integer, optional, 1-5) — INTUITION signal weight
-- `reasoning` (string, optional) — Why this is worth remembering
-- `cause` (string, optional) — What triggered this memory
-- `effect` (string, optional) — What resulted
+- `reasoning` (string, optional, max 50K chars) — Why this is worth remembering
+- `cause` (string, optional, max 50K chars) — What triggered this memory
+- `effect` (string, optional, max 50K chars) — What resulted
 
 ## neurosync_query
 
 Search across episodes, theories, analogies, causal graph, or failures.
 
 **Parameters:**
-- `query` (string, required) — Search query
+- `query` (string, required, max 5K chars) — Search query
 - `mode` (string, default: "semantic") — Search mode: `semantic`, `analogy`, `causal`, `failures`
 - `scope` (string, default: "all") — "all", "episodes", or "theories"
 - `project` (string, optional)
@@ -72,19 +74,29 @@ Record a cross-session handoff for multi-session tasks. Creates a high-weight co
 
 Health check — no parameters.
 
-**Returns:** Episode, theory, contradiction counts; ChromaDB sizes; current session info; graph health (if Neo4j configured).
+**Returns:** Episode, theory, contradiction counts; ChromaDB sizes; current session info; graph health (if Neo4j configured); intelligence metrics (active analyzers, total insights, last run timestamps, developer profile).
 
 ## neurosync_theories
 
-Browse, inspect, retire, relate, or view hierarchy of theories.
+Browse, inspect, retire, relate, view history, rollback, or view hierarchy of theories.
 
 **Parameters:**
-- `action` (string, default: "list") — "list", "detail", "retire", "relate", "graph"
+- `action` (string, default: "list") — "list", "detail", "retire", "relate", "graph", "history", "rollback"
 - `scope` (string, optional) — "project", "domain", or "craft"
 - `project` (string, optional)
-- `theory_id` (string, optional) — Required for detail/retire
+- `theory_id` (string, optional) — Required for detail/retire/history/rollback
 - `related_ids` (array of strings, optional) — Theory IDs to link (for relate action)
+- `version_number` (integer, optional) — Target version number (for rollback action)
 - `limit` (integer, default: 20)
+
+**Actions:**
+- `list` — Browse theories filtered by scope/project
+- `detail` — Full theory content, confidence, relationships
+- `retire` — Mark theory as inactive
+- `relate` — Link related theories together
+- `graph` — View theory hierarchy
+- `history` — View all version snapshots of a theory (shows confidence/content changes over time)
+- `rollback` — Revert a theory to a previous version number
 
 ## neurosync_consolidate
 

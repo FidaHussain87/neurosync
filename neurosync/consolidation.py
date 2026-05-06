@@ -71,7 +71,13 @@ class ConsolidationEngine:
         self._mdl_threshold = mdl_threshold
 
     def run(self, project: Optional[str] = None, dry_run: bool = False) -> dict[str, Any]:
-        """Run full consolidation pipeline."""
+        """Run full consolidation pipeline with chunked processing.
+
+        Processes episodes in batches of BATCH_SIZE to cap memory usage
+        and allow partial progress even if interrupted.
+        """
+        batch_size = 50
+
         # 1. Gather unconsolidated episodes
         episodes = self._episodic.get_unconsolidated_episodes(limit=500)
         if project:
@@ -84,86 +90,92 @@ class ConsolidationEngine:
                 "theories_confirmed": 0,
             }
 
-        # 2. Cluster by semantic similarity
-        clusters = self._cluster_episodes(episodes)
-
-        # 3-6. Process each cluster
+        # 2-6. Process in batches to cap memory
         theories_created = 0
         theories_confirmed = 0
         consolidated_ids: list[str] = []
+        total_consolidated = 0
         candidates: list[dict[str, Any]] = []
+        total_clusters = 0
 
-        for cluster in clusters:
-            if len(cluster) < 2:
+        for batch_start in range(0, len(episodes), batch_size):
+            batch = episodes[batch_start : batch_start + batch_size]
+            if len(batch) < 2:
                 continue
 
-            # Extract candidate theory
-            candidate = self._extract_candidate(cluster)
-            if not candidate:
-                continue
+            clusters = self._cluster_episodes(batch)
+            total_clusters += len(clusters)
 
-            # MDL prune
-            if not self._passes_mdl(candidate, cluster):
-                continue
+            for cluster in clusters:
+                if len(cluster) < 2:
+                    continue
 
-            if dry_run:
-                candidates.append(
-                    {
-                        "content": candidate,
-                        "episode_count": len(cluster),
-                        "scope": self._classify_scope(cluster),
-                    }
-                )
-                continue
+                candidate = self._extract_candidate(cluster)
+                if not candidate:
+                    continue
 
-            # Check for existing matching theory
-            existing = self._find_matching_theory(candidate)
-            if existing:
-                # Confirm existing theory
-                for ep in cluster:
-                    self._semantic.confirm_theory(existing.id, episode_id=ep.id)
-                theories_confirmed += 1
-            else:
-                # Create new theory
-                scope, qualifier = self._classify_scope(cluster), self._scope_qualifier(cluster)
-                new_theory = self._semantic.create_theory(
-                    content=candidate,
-                    scope=scope,
-                    scope_qualifier=qualifier,
-                    confidence=0.5,
-                    source_episodes=[ep.id for ep in cluster],
-                )
-                theories_created += 1
-                # Auto-compute structural fingerprint
-                fp = self._analogy.fingerprint(candidate)
-                if fp.patterns:
-                    new_theory.structural_fingerprint = fp.to_string()
-                    self._db.save_theory(new_theory)
-                    self._db.set_entity_fingerprints(new_theory.id, "theory", list(fp.patterns))
-                # Auto-link to related theories
-                self._link_new_theory(new_theory.id)
-                # Check for parent relationship
-                self._check_parent_theory(new_theory.id, cluster)
+                if not self._passes_mdl(candidate, cluster):
+                    continue
 
-            consolidated_ids.extend(ep.id for ep in cluster)
+                if dry_run:
+                    candidates.append(
+                        {
+                            "content": candidate,
+                            "episode_count": len(cluster),
+                            "scope": self._classify_scope(cluster),
+                        }
+                    )
+                    continue
 
-        # 7. Mark episodes consolidated
+                existing = self._find_matching_theory(candidate)
+                if existing:
+                    for ep in cluster:
+                        self._semantic.confirm_theory(existing.id, episode_id=ep.id)
+                    theories_confirmed += 1
+                else:
+                    scope, qualifier = self._classify_scope(cluster), self._scope_qualifier(
+                        cluster
+                    )
+                    new_theory = self._semantic.create_theory(
+                        content=candidate,
+                        scope=scope,
+                        scope_qualifier=qualifier,
+                        confidence=0.5,
+                        source_episodes=[ep.id for ep in cluster],
+                    )
+                    theories_created += 1
+                    fp = self._analogy.fingerprint(candidate)
+                    if fp.patterns:
+                        new_theory.structural_fingerprint = fp.to_string()
+                        self._db.save_theory(new_theory)
+                        self._db.set_entity_fingerprints(
+                            new_theory.id, "theory", list(fp.patterns)
+                        )
+                    self._link_new_theory(new_theory.id)
+                    self._check_parent_theory(new_theory.id, cluster)
+
+                consolidated_ids.extend(ep.id for ep in cluster)
+
+            # Mark consolidated after each batch for partial progress
+            if not dry_run and consolidated_ids:
+                batch_ids = list(set(consolidated_ids))
+                self._episodic.mark_consolidated(batch_ids)
+                total_consolidated += len(batch_ids)
+                consolidated_ids = []
+
+        # 7. Final mark for any remaining (shouldn't happen but defensive)
         if not dry_run and consolidated_ids:
             unique_ids = list(set(consolidated_ids))
             self._episodic.mark_consolidated(unique_ids)
-
-        # 8. Confidence decay is handled by ForgettingEngine.run_forgetting_pass()
-        # which is called after consolidation in mcp_server._try_auto_consolidate().
-        # This avoids competing linear vs Ebbinghaus decay systems.
-        decayed = 0
+            total_consolidated += len(unique_ids)
 
         result: dict[str, Any] = {
             "episodes_processed": len(episodes),
-            "clusters_found": len(clusters),
+            "clusters_found": total_clusters,
             "theories_created": theories_created,
             "theories_confirmed": theories_confirmed,
-            "episodes_consolidated": len(set(consolidated_ids)),
-            "theories_decayed": decayed,
+            "episodes_consolidated": total_consolidated,
+            "theories_decayed": 0,
         }
         if dry_run:
             result["dry_run"] = True

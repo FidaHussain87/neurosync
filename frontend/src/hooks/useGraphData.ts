@@ -20,7 +20,7 @@ function assignClusters(data: GraphData): GraphData {
   for (const l of data.links) {
     const src = typeof l.source === 'object' ? (l.source as GraphNode).id : l.source;
     const tgt = typeof l.target === 'object' ? (l.target as GraphNode).id : l.target;
-    if (g.hasNode(src) && g.hasNode(tgt) && !g.hasEdge(src, tgt)) {
+    if (src !== tgt && g.hasNode(src) && g.hasNode(tgt) && !g.hasEdge(src, tgt)) {
       g.addEdge(src, tgt);
     }
   }

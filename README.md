@@ -37,6 +37,7 @@ NeuroSync doesn't just *store* things — it **learns**.
 | **Per-prompt cost** | ~$0.25 overhead (hooks on every turn) | Zero — no hooks, no per-turn injection |
 | **Storage strategy** | Stores everything raw (code, HTML, conversations) | Stores structured *events*, extracts *patterns* |
 | **Learning** | None — just a filing cabinet | Clusters episodes, extracts theories, tracks confidence |
+| **Intelligence** | None — no pattern mining | Mines stored data for work patterns, file dependencies, fatigue signals |
 | **Mistakes** | Treated same as everything else | Exponentially weighted — corrections compound (2^N) |
 | **Recall** | Returns a ranked list of matches | Winner-take-all — one clear answer, not a menu |
 | **User awareness** | None | Tracks what you already know, doesn't re-explain it |
@@ -45,9 +46,11 @@ The core idea: **your AI assistant should get better at working with *you* over 
 
 ### What's automatic
 
-- **Auto-consolidation** — theories are extracted automatically when enough episodes accumulate. No manual `consolidate` or cron jobs needed.
+- **Auto-consolidation** — theories are extracted automatically when enough episodes accumulate. No manual `consolidate` or cron jobs needed. Runs in a non-blocking background thread.
+- **Intelligence layer** — background analyzers mine your stored data for patterns: peak productivity hours, session fatigue, file co-occurrence (hidden dependencies), volatility hotspots. Zero LLM cost — pure local statistics.
 - **Passive git observation** — file changes and commits are recorded as low-weight "observed" episodes at session boundaries. The developer doesn't need to describe what they changed — NeuroSync sees it.
 - **Dynamic protocol hints** — tool responses include contextual guidance based on session state (correction count, pending episodes).
+- **Proactive warnings** — fatigue alerts and volatility warnings surface automatically in MCP responses when patterns suggest trouble.
 - **Minimal protocol** — 3 rules instead of 125 lines. Run `neurosync generate-protocol` to get the CLAUDE.md snippet.
 
 ---
@@ -707,21 +710,22 @@ If the Neo4j driver isn't installed or the server isn't running:
 ```
 neurosync/
 ├── neurosync/                  # The main Python package
-│   ├── mcp_server.py           # The MCP server (talks JSON-RPC over stdio, 10 tools)
-│   ├── cli.py                  # Command-line interface
-│   ├── config.py               # Settings management (env > config.json > defaults)
+│   ├── mcp_server.py           # The MCP server (JSON-RPC over stdio, 10 tools, thread pool)
+│   ├── cli.py                  # CLI: serve, status, consolidate, export/import, reindex, downgrade, reset
+│   ├── config.py               # Settings management (env > config.json > defaults) + validation
 │   ├── models.py               # Data structures (Session, Episode, Theory, etc.)
-│   ├── db.py                   # SQLite database (WAL mode, migrations) — default backend
-│   ├── pg_db.py                # PostgreSQL database (connection pooling, JSONB) — optional backend
-│   ├── vectorstore.py          # ChromaDB for semantic search
+│   ├── db.py                   # SQLite database (WAL mode, schema v8, migrations) — default backend
+│   ├── pg_db.py                # PostgreSQL database (connection pooling, JSONB, schema v8) — optional
+│   ├── vectorstore.py          # ChromaDB wrapper (auto-recovery, reindex from DB, integrity checks)
 │   ├── episodic.py             # Layer 1: session & episode management, signal computation
-│   ├── semantic.py             # Layer 2: theory management, confidence & linking
+│   ├── semantic.py             # Layer 2: theory management, confidence, linking, versioning & rollback
 │   ├── working.py              # Layer 3: recall & winner-take-all
-│   ├── retrieval.py            # Full recall pipeline with familiarity filtering & parent context
+│   ├── retrieval.py            # Recall pipeline (familiarity filtering, cross-project theory discovery)
 │   ├── user_model.py           # Topic familiarity tracking & meta-learning
-│   ├── consolidation.py        # Consolidation engine (TF-IDF + causal merge + auto-trigger)
+│   ├── consolidation.py        # Consolidation engine (chunked batches, TF-IDF, causal merge)
 │   ├── signals.py              # Signal weight calculations (7 active + 1 unwired)
 │   ├── quality.py              # Episode quality scoring (0-7 scale)
+│   ├── logging.py              # Structured logging (JSON/text), in-process metrics (counters + latencies)
 │   ├── forgetting.py           # Ebbinghaus decay, spaced repetition, active pruning
 │   ├── analogy.py              # Structural fingerprinting, semantic+structural search
 │   ├── failure.py              # Failure records, proactive warnings, anti-patterns
@@ -732,16 +736,24 @@ neurosync/
 │   ├── protocol.py             # Minimal protocol text & CLAUDE.md generator
 │   ├── starter_pack_loader.py  # Loads YAML starter packs
 │   ├── graph.py                # Optional Neo4j knowledge graph sync & querying
+│   ├── intelligence/           # Background intelligence layer (zero LLM cost)
+│   │   ├── __init__.py         # IntelligenceEngine orchestrator (daemon thread)
+│   │   ├── models.py           # Insight + DeveloperProfile dataclasses
+│   │   ├── surfacer.py         # Relevance scoring & insight selection
+│   │   └── analyzers/          # Pluggable background analyzers
+│   │       ├── base.py         # BaseAnalyzer ABC (interval, max_runtime)
+│   │       ├── work_patterns.py # Peak hours, session rhythm, day-of-week patterns
+│   │       └── file_network.py  # File co-occurrence (Jaccard), volatility hotspots
 │   └── starter_packs/          # Built-in theory packs (YAML files)
-├── tests/                      # Test suite (~368 tests, 86%+ coverage)
-├── frontend/                   # Interactive graph visualization (React + TypeScript)
+├── tests/                      # Test suite (~474 tests, 86%+ coverage)
+├── frontend/                   # Interactive 3D graph visualization (React + TypeScript)
 │   ├── src/
-│   │   ├── components/         # GraphCanvas, Sidebar, DetailPanel, QueryRunner, ConnectionForm
-│   │   ├── hooks/              # useNeo4jConnection, useGraphData
+│   │   ├── components/         # GraphCanvas (3D), Sidebar, DetailPanel, QueryRunner, ConnectionForm
+│   │   ├── hooks/              # useNeo4jConnection, useGraphData, useHandGestures
 │   │   ├── services/           # Neo4j driver wrapper and query extraction
 │   │   ├── types.ts            # GraphNode, GraphLink, GraphData interfaces
 │   │   └── constants.ts        # Node/link styles, 12 pre-built Cypher queries
-│   ├── package.json            # React 18, react-force-graph-2d, neo4j-driver, Tailwind
+│   ├── package.json            # React 18, react-force-graph-3d, neo4j-driver, Tailwind
 │   └── vite.config.ts          # Vite 5.x with chunk splitting
 ├── docs/                       # Detailed documentation
 ├── pyproject.toml              # Package config
@@ -770,11 +782,16 @@ neurosync/
 
 ```bash
 neurosync serve                          # Start MCP server on stdio
-neurosync status                         # Show memory stats
+neurosync status                         # Show memory stats + intelligence metrics
 neurosync consolidate                    # Run the learning engine
 neurosync consolidate --dry-run          # Preview without changing anything
 neurosync consolidate --project myproj   # Only consolidate one project
 neurosync import-starter-pack <name>     # Load a starter theory pack
+neurosync export --output backup.json    # Export all data to JSON
+neurosync import --input backup.json     # Import data from JSON backup
+neurosync reindex                        # Re-populate ChromaDB from SQLite source of truth
+neurosync reindex --reset                # Reset ChromaDB collections before reindexing
+neurosync downgrade --version 7 --confirm # Downgrade database schema (destructive)
 neurosync generate-protocol              # Output minimal protocol for CLAUDE.md
 neurosync generate-protocol --project X  # Generate full CLAUDE.md for project X
 neurosync install-hook                   # Install auto-recall hook for Claude Code

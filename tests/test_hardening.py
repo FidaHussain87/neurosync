@@ -45,8 +45,9 @@ class TestAtomicInit:
         srv._vs = None
         srv._config = None
 
-    def test_init_atomic_on_db_failure(self, config):
+    def test_init_atomic_on_db_failure(self, config, monkeypatch):
         """If Database constructor throws, globals should remain None."""
+        monkeypatch.setenv("NEUROSYNC_DB_BACKEND", "sqlite")
         import neurosync.mcp_server as srv
         srv._db = None
         srv._vs = None

@@ -2,9 +2,27 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Optional
 
 from neurosync.models import Theory
+
+_encoder: Optional[Any] = None
+_encoder_loaded: bool = False
+
+
+def _get_encoder() -> Optional[Any]:
+    """Lazy-load tiktoken encoder (cl100k_base). Returns None if unavailable."""
+    global _encoder, _encoder_loaded
+    if _encoder_loaded:
+        return _encoder
+    _encoder_loaded = True
+    try:
+        import tiktoken
+
+        _encoder = tiktoken.get_encoding("cl100k_base")
+    except (ImportError, Exception):
+        _encoder = None
+    return _encoder
 
 
 def build_recall_query(project: str, branch: str, context: str) -> str:
@@ -34,5 +52,8 @@ def format_theory_result(theory: Theory, score: float) -> dict[str, Any]:
 
 
 def estimate_tokens(text: str) -> int:
-    """Rough token estimate: ~4 chars per token."""
+    """Estimate token count using tiktoken (cl100k_base) with char-based fallback."""
+    enc = _get_encoder()
+    if enc is not None:
+        return max(1, len(enc.encode(text)))
     return max(1, len(text) // 4)

@@ -24,7 +24,7 @@ from neurosync.models import (
 
 logger = get_logger("db")
 
-CURRENT_SCHEMA_VERSION = 5
+CURRENT_SCHEMA_VERSION = 8
 
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -195,6 +195,72 @@ CREATE INDEX IF NOT EXISTS idx_causal_cause_effect ON causal_links(cause_text, e
 
 -- v5: Composite index on normalized causal text for indexed dedup lookup
 CREATE INDEX IF NOT EXISTS idx_causal_normalized ON causal_links(cause_text_normalized, effect_text_normalized);
+
+-- v6: Audit trail
+CREATE TABLE IF NOT EXISTS audit_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT NOT NULL,
+    entity_type TEXT NOT NULL,
+    entity_id TEXT NOT NULL,
+    action TEXT NOT NULL,
+    field_name TEXT DEFAULT '',
+    old_value TEXT DEFAULT '',
+    new_value TEXT DEFAULT '',
+    context TEXT DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_audit_entity ON audit_log(entity_type, entity_id);
+CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_log(timestamp);
+
+-- v7: Theory versioning
+CREATE TABLE IF NOT EXISTS theory_versions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    theory_id TEXT NOT NULL REFERENCES theories(id),
+    version_number INTEGER NOT NULL,
+    content TEXT NOT NULL DEFAULT '',
+    confidence REAL DEFAULT 0.5,
+    confirmation_count INTEGER DEFAULT 0,
+    contradiction_count INTEGER DEFAULT 0,
+    validation_status TEXT DEFAULT 'unvalidated',
+    scope TEXT NOT NULL DEFAULT 'craft',
+    scope_qualifier TEXT DEFAULT '',
+    active INTEGER DEFAULT 1,
+    source_episodes TEXT DEFAULT '[]',
+    created_at TEXT NOT NULL,
+    action TEXT DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_tv_theory ON theory_versions(theory_id);
+CREATE INDEX IF NOT EXISTS idx_tv_version ON theory_versions(theory_id, version_number);
+
+CREATE TABLE IF NOT EXISTS insights (
+    id TEXT PRIMARY KEY,
+    insight_type TEXT NOT NULL,
+    category TEXT NOT NULL DEFAULT '',
+    content TEXT NOT NULL DEFAULT '',
+    evidence TEXT DEFAULT '[]',
+    confidence REAL DEFAULT 0.5,
+    staleness_days REAL DEFAULT 0.0,
+    project TEXT DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    expires_at TEXT,
+    surfaced_count INTEGER DEFAULT 0,
+    dismissed INTEGER DEFAULT 0,
+    metadata TEXT DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_insights_type ON insights(insight_type);
+CREATE INDEX IF NOT EXISTS idx_insights_project ON insights(project);
+CREATE INDEX IF NOT EXISTS idx_insights_confidence ON insights(confidence);
+
+CREATE TABLE IF NOT EXISTS developer_profile (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    profile_key TEXT NOT NULL UNIQUE,
+    profile_value TEXT NOT NULL DEFAULT '',
+    computed_at TEXT NOT NULL,
+    observation_count INTEGER DEFAULT 0,
+    confidence REAL DEFAULT 0.5,
+    metadata TEXT DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_devprofile_key ON developer_profile(profile_key);
 """
 
 
@@ -351,6 +417,120 @@ _V4_TO_V5_INDEXES = [
     ),
 ]
 
+_V5_TO_V6_TABLES = [
+    (
+        """CREATE TABLE IF NOT EXISTS audit_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT NOT NULL,
+            entity_type TEXT NOT NULL,
+            entity_id TEXT NOT NULL,
+            action TEXT NOT NULL,
+            field_name TEXT DEFAULT '',
+            old_value TEXT DEFAULT '',
+            new_value TEXT DEFAULT '',
+            context TEXT DEFAULT ''
+        )""",
+        "audit_log",
+    ),
+]
+
+_V5_TO_V6_INDEXES = [
+    (
+        "CREATE INDEX IF NOT EXISTS idx_audit_entity ON audit_log(entity_type, entity_id)",
+        "idx_audit_entity",
+    ),
+    (
+        "CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_log(timestamp)",
+        "idx_audit_timestamp",
+    ),
+]
+
+_V6_TO_V7_TABLES = [
+    (
+        """CREATE TABLE IF NOT EXISTS theory_versions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            theory_id TEXT NOT NULL REFERENCES theories(id),
+            version_number INTEGER NOT NULL,
+            content TEXT NOT NULL DEFAULT '',
+            confidence REAL DEFAULT 0.5,
+            confirmation_count INTEGER DEFAULT 0,
+            contradiction_count INTEGER DEFAULT 0,
+            validation_status TEXT DEFAULT 'unvalidated',
+            scope TEXT NOT NULL DEFAULT 'craft',
+            scope_qualifier TEXT DEFAULT '',
+            active INTEGER DEFAULT 1,
+            source_episodes TEXT DEFAULT '[]',
+            created_at TEXT NOT NULL,
+            action TEXT DEFAULT ''
+        )""",
+        "theory_versions",
+    ),
+]
+
+_V6_TO_V7_INDEXES = [
+    (
+        "CREATE INDEX IF NOT EXISTS idx_tv_theory ON theory_versions(theory_id)",
+        "idx_tv_theory",
+    ),
+    (
+        "CREATE INDEX IF NOT EXISTS idx_tv_version ON theory_versions(theory_id, version_number)",
+        "idx_tv_version",
+    ),
+]
+
+_V7_TO_V8_TABLES = [
+    (
+        """CREATE TABLE IF NOT EXISTS insights (
+            id TEXT PRIMARY KEY,
+            insight_type TEXT NOT NULL,
+            category TEXT NOT NULL DEFAULT '',
+            content TEXT NOT NULL DEFAULT '',
+            evidence TEXT DEFAULT '[]',
+            confidence REAL DEFAULT 0.5,
+            staleness_days REAL DEFAULT 0.0,
+            project TEXT DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            expires_at TEXT,
+            surfaced_count INTEGER DEFAULT 0,
+            dismissed INTEGER DEFAULT 0,
+            metadata TEXT DEFAULT '{}'
+        )""",
+        "insights",
+    ),
+    (
+        """CREATE TABLE IF NOT EXISTS developer_profile (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            profile_key TEXT NOT NULL UNIQUE,
+            profile_value TEXT NOT NULL DEFAULT '',
+            computed_at TEXT NOT NULL,
+            observation_count INTEGER DEFAULT 0,
+            confidence REAL DEFAULT 0.5,
+            metadata TEXT DEFAULT '{}'
+        )""",
+        "developer_profile",
+    ),
+]
+
+_V7_TO_V8_INDEXES = [
+    (
+        "CREATE INDEX IF NOT EXISTS idx_insights_type ON insights(insight_type)",
+        "idx_insights_type",
+    ),
+    (
+        "CREATE INDEX IF NOT EXISTS idx_insights_project ON insights(project)",
+        "idx_insights_project",
+    ),
+    (
+        "CREATE INDEX IF NOT EXISTS idx_insights_confidence ON insights(confidence)",
+        "idx_insights_confidence",
+    ),
+    (
+        "CREATE INDEX IF NOT EXISTS idx_devprofile_key ON developer_profile(profile_key)",
+        "idx_devprofile_key",
+    ),
+]
+
 
 class Database:
     """Thread-safe SQLite database manager for NeuroSync."""
@@ -459,6 +639,27 @@ class Database:
                 if not self._index_exists(conn, index_name):
                     conn.execute(create_stmt)
             self._backfill_v5_normalized_columns(conn)
+        if from_version < 6:
+            for create_stmt, table_name in _V5_TO_V6_TABLES:
+                if not self._table_exists(conn, table_name):
+                    conn.execute(create_stmt)
+            for create_stmt, index_name in _V5_TO_V6_INDEXES:
+                if not self._index_exists(conn, index_name):
+                    conn.execute(create_stmt)
+        if from_version < 7:
+            for create_stmt, table_name in _V6_TO_V7_TABLES:
+                if not self._table_exists(conn, table_name):
+                    conn.execute(create_stmt)
+            for create_stmt, index_name in _V6_TO_V7_INDEXES:
+                if not self._index_exists(conn, index_name):
+                    conn.execute(create_stmt)
+        if from_version < 8:
+            for create_stmt, table_name in _V7_TO_V8_TABLES:
+                if not self._table_exists(conn, table_name):
+                    conn.execute(create_stmt)
+            for create_stmt, index_name in _V7_TO_V8_INDEXES:
+                if not self._index_exists(conn, index_name):
+                    conn.execute(create_stmt)
         conn.execute("UPDATE schema_version SET version = ?", (CURRENT_SCHEMA_VERSION,))
 
     def _backfill_v4_junction_tables(self, conn: sqlite3.Connection) -> None:
@@ -878,6 +1079,96 @@ class Database:
             hierarchy_depth=row["hierarchy_depth"] or 0,
             structural_fingerprint=row["structural_fingerprint"] or "",
         )
+
+    # --- Theory Versioning ---
+
+    def save_theory_version(self, theory: Theory, action: str = "") -> int:
+        """Snapshot current theory state before mutation. Returns version number."""
+        with self._lock:
+            conn = self._get_conn()
+            row = conn.execute(
+                "SELECT COALESCE(MAX(version_number), 0) FROM theory_versions WHERE theory_id = ?",
+                (theory.id,),
+            ).fetchone()
+            next_version = row[0] + 1
+            conn.execute(
+                """INSERT INTO theory_versions
+                   (theory_id, version_number, content, confidence,
+                    confirmation_count, contradiction_count, validation_status,
+                    scope, scope_qualifier, active, source_episodes, created_at, action)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    theory.id,
+                    next_version,
+                    theory.content,
+                    theory.confidence,
+                    theory.confirmation_count,
+                    theory.contradiction_count,
+                    theory.validation_status,
+                    theory.scope,
+                    theory.scope_qualifier,
+                    1 if theory.active else 0,
+                    self._to_json(theory.source_episodes),
+                    _utcnow(),
+                    action,
+                ),
+            )
+            conn.commit()
+            return next_version
+
+    def get_theory_versions(self, theory_id: str, limit: int = 20) -> list[dict[str, Any]]:
+        """Get version history for a theory, most recent first."""
+        conn = self._get_conn()
+        rows = conn.execute(
+            """SELECT * FROM theory_versions
+               WHERE theory_id = ?
+               ORDER BY version_number DESC LIMIT ?""",
+            (theory_id, limit),
+        ).fetchall()
+        return [
+            {
+                "version_number": r["version_number"],
+                "content": r["content"],
+                "confidence": r["confidence"],
+                "confirmation_count": r["confirmation_count"],
+                "contradiction_count": r["contradiction_count"],
+                "validation_status": r["validation_status"],
+                "scope": r["scope"],
+                "scope_qualifier": r["scope_qualifier"],
+                "active": bool(r["active"]),
+                "source_episodes": self._from_json(r["source_episodes"], []),
+                "created_at": r["created_at"],
+                "action": r["action"],
+            }
+            for r in rows
+        ]
+
+    def rollback_theory(self, theory_id: str, version_number: int) -> Optional[Theory]:
+        """Restore a theory to a previous version. Snapshots current state first."""
+        theory = self.get_theory(theory_id)
+        if not theory:
+            return None
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT * FROM theory_versions WHERE theory_id = ? AND version_number = ?",
+            (theory_id, version_number),
+        ).fetchone()
+        if not row:
+            return None
+        # Snapshot current state before rollback
+        self.save_theory_version(theory, action="pre-rollback")
+        # Restore fields from the version
+        theory.content = row["content"]
+        theory.confidence = row["confidence"]
+        theory.confirmation_count = row["confirmation_count"]
+        theory.contradiction_count = row["contradiction_count"]
+        theory.validation_status = row["validation_status"]
+        theory.scope = row["scope"]
+        theory.scope_qualifier = row["scope_qualifier"]
+        theory.active = bool(row["active"])
+        theory.source_episodes = self._from_json(row["source_episodes"], [])
+        self.save_theory(theory)
+        return theory
 
     # --- Contradictions ---
 
@@ -1481,6 +1772,324 @@ class Database:
             created_at=row["created_at"],
             last_seen=row["last_seen"],
         )
+
+    # --- Audit Log ---
+
+    def audit(
+        self,
+        entity_type: str,
+        entity_id: str,
+        action: str,
+        field_name: str = "",
+        old_value: str = "",
+        new_value: str = "",
+        context: str = "",
+    ) -> None:
+        """Record an audit trail entry for entity changes."""
+        with self._lock:
+            conn = self._get_conn()
+            conn.execute(
+                """INSERT INTO audit_log
+                   (timestamp, entity_type, entity_id, action,
+                    field_name, old_value, new_value, context)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    _utcnow(),
+                    entity_type,
+                    entity_id,
+                    action,
+                    field_name,
+                    old_value,
+                    new_value,
+                    context,
+                ),
+            )
+            conn.commit()
+
+    def get_audit_log(
+        self,
+        entity_type: str = "",
+        entity_id: str = "",
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """Retrieve audit log entries."""
+        conn = self._get_conn()
+        clauses = []
+        params: list[Any] = []
+        if entity_type:
+            clauses.append("entity_type = ?")
+            params.append(entity_type)
+        if entity_id:
+            clauses.append("entity_id = ?")
+            params.append(entity_id)
+        where = " AND ".join(clauses) if clauses else "1=1"
+        params.append(limit)
+        rows = conn.execute(
+            f"SELECT * FROM audit_log WHERE {where} ORDER BY timestamp DESC LIMIT ?",
+            params,
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    # --- Schema Downgrade ---
+
+    def _rollback_migrations(
+        self, conn: sqlite3.Connection, from_version: int, to_version: int
+    ) -> None:
+        """Run schema rollbacks from from_version down to to_version (exclusive)."""
+        if from_version >= 7 and to_version < 7:
+            if self._index_exists(conn, "idx_tv_version"):
+                conn.execute("DROP INDEX idx_tv_version")
+            if self._index_exists(conn, "idx_tv_theory"):
+                conn.execute("DROP INDEX idx_tv_theory")
+            if self._table_exists(conn, "theory_versions"):
+                conn.execute("DROP TABLE theory_versions")
+        if from_version >= 6 and to_version < 6:
+            if self._index_exists(conn, "idx_audit_timestamp"):
+                conn.execute("DROP INDEX idx_audit_timestamp")
+            if self._index_exists(conn, "idx_audit_entity"):
+                conn.execute("DROP INDEX idx_audit_entity")
+            if self._table_exists(conn, "audit_log"):
+                conn.execute("DROP TABLE audit_log")
+
+        conn.execute("UPDATE schema_version SET version = ?", (to_version,))
+
+    def downgrade(self, target_version: int) -> None:
+        """Downgrade the schema to target_version.
+
+        Validates the version range and runs rollbacks in reverse order.
+        Only supports downgrade to version 5 currently.
+        """
+        if target_version < 5:
+            raise ValueError(
+                f"Cannot downgrade below version 5. Requested: {target_version}"
+            )
+        if target_version >= CURRENT_SCHEMA_VERSION:
+            raise ValueError(
+                f"Target version {target_version} is not below current version"
+                f" {CURRENT_SCHEMA_VERSION}"
+            )
+
+        with self._lock:
+            conn = self._get_conn()
+            cur = conn.execute("SELECT version FROM schema_version")
+            row = cur.fetchone()
+            current = row["version"] if row else CURRENT_SCHEMA_VERSION
+
+            if target_version >= current:
+                raise ValueError(
+                    f"Target version {target_version} is not below current"
+                    f" schema version {current}"
+                )
+
+            self._rollback_migrations(conn, current, target_version)
+            conn.commit()
+
+    # --- Orphan Session Recovery ---
+
+    def close_orphaned_sessions(self, max_age_hours: int = 24) -> list[str]:
+        """Find and close sessions with ended_at=NULL older than max_age_hours."""
+        with self._lock:
+            conn = self._get_conn()
+            rows = conn.execute(
+                """SELECT id FROM sessions
+                   WHERE ended_at IS NULL
+                   AND julianday('now') - julianday(started_at) > ?""",
+                (max_age_hours / 24.0,),
+            ).fetchall()
+            orphan_ids = [r["id"] for r in rows]
+            if orphan_ids:
+                now = _utcnow()
+                placeholders = ",".join("?" for _ in orphan_ids)
+                conn.execute(
+                    f"""UPDATE sessions
+                        SET ended_at = ?, summary = '[auto-closed: orphaned session]'
+                        WHERE id IN ({placeholders})""",
+                    [now, *orphan_ids],
+                )
+                conn.commit()
+            return orphan_ids
+
+    # --- Intelligence Layer ---
+
+    def list_episodes_lightweight(
+        self,
+        columns: list[str],
+        limit: int = 2000,
+    ) -> list[dict[str, Any]]:
+        """Fetch episodes with only the specified columns (for analytics, avoids loading content).
+
+        Valid columns: id, session_id, event_type, timestamp, signal_weight,
+        quality_score, files_touched, layers_touched, consolidated.
+        """
+        allowed = {
+            "id", "session_id", "event_type", "timestamp", "signal_weight",
+            "quality_score", "files_touched", "layers_touched", "consolidated",
+        }
+        safe_cols = [c for c in columns if c in allowed]
+        if not safe_cols:
+            return []
+        col_str = ", ".join(safe_cols)
+        conn = self._get_conn()
+        rows = conn.execute(
+            f"SELECT {col_str} FROM episodes ORDER BY timestamp DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        results = []
+        for row in rows:
+            d = dict(row)
+            if "files_touched" in d:
+                d["files_touched"] = self._from_json(d.get("files_touched", "[]"), [])
+            results.append(d)
+        return results
+
+    def upsert_insight(self, insight: Any) -> None:
+        """Insert or update an insight."""
+        with self._lock:
+            conn = self._get_conn()
+            conn.execute(
+                """INSERT INTO insights
+                   (id, insight_type, category, content, evidence, confidence,
+                    staleness_days, project, created_at, updated_at, expires_at,
+                    surfaced_count, dismissed, metadata)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(id) DO UPDATE SET
+                    content = excluded.content,
+                    confidence = excluded.confidence,
+                    updated_at = excluded.updated_at,
+                    evidence = excluded.evidence,
+                    metadata = excluded.metadata,
+                    staleness_days = excluded.staleness_days""",
+                (
+                    insight.id,
+                    insight.insight_type,
+                    insight.category,
+                    insight.content,
+                    self._to_json(insight.evidence),
+                    insight.confidence,
+                    insight.staleness_days,
+                    insight.project,
+                    insight.created_at,
+                    insight.updated_at,
+                    insight.expires_at or None,
+                    insight.surfaced_count,
+                    1 if insight.dismissed else 0,
+                    self._to_json(insight.metadata),
+                ),
+            )
+            conn.commit()
+
+    def list_insights(
+        self,
+        min_confidence: float = 0.0,
+        dismissed: bool = False,
+        insight_type: str = "",
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """List insights matching criteria."""
+        with self._lock:
+            conn = self._get_conn()
+            clauses = ["confidence >= ?"]
+            params: list[Any] = [min_confidence]
+            if not dismissed:
+                clauses.append("dismissed = 0")
+            if insight_type:
+                clauses.append("insight_type = ?")
+                params.append(insight_type)
+            where = " AND ".join(clauses)
+            rows = conn.execute(
+                f"SELECT * FROM insights WHERE {where} ORDER BY confidence DESC LIMIT ?",
+                [*params, limit],
+            ).fetchall()
+        results = []
+        for row in rows:
+            d = dict(row)
+            d["evidence"] = self._from_json(d.get("evidence", "[]"), [])
+            d["metadata"] = self._from_json(d.get("metadata", "{}"), {})
+            results.append(d)
+        return results
+
+    def delete_expired_insights(self) -> int:
+        """Delete insights whose expires_at has passed. Returns count deleted."""
+        with self._lock:
+            conn = self._get_conn()
+            now = _utcnow()
+            cursor = conn.execute(
+                "DELETE FROM insights WHERE expires_at IS NOT NULL AND expires_at < ?",
+                (now,),
+            )
+            conn.commit()
+            return cursor.rowcount
+
+    def increment_insight_surfaced(self, insight_id: str) -> None:
+        """Increment the surfaced_count for an insight."""
+        with self._lock:
+            conn = self._get_conn()
+            conn.execute(
+                "UPDATE insights SET surfaced_count = surfaced_count + 1 WHERE id = ?",
+                (insight_id,),
+            )
+            conn.commit()
+
+    def dismiss_insight(self, insight_id: str) -> None:
+        """Mark an insight as dismissed by the user."""
+        with self._lock:
+            conn = self._get_conn()
+            conn.execute(
+                "UPDATE insights SET dismissed = 1 WHERE id = ?",
+                (insight_id,),
+            )
+            conn.commit()
+
+    def count_insights(self) -> int:
+        """Count total non-dismissed insights."""
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT COUNT(*) FROM insights WHERE dismissed = 0"
+        ).fetchone()
+        return row[0] if row else 0
+
+    def upsert_developer_profile(
+        self,
+        key: str,
+        value: Any,
+        observation_count: int = 0,
+        confidence: float = 0.5,
+    ) -> None:
+        """Insert or update a developer profile entry."""
+        import json as _json
+
+        with self._lock:
+            conn = self._get_conn()
+            conn.execute(
+                """INSERT INTO developer_profile
+                   (profile_key, profile_value, computed_at, observation_count, confidence)
+                   VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT(profile_key) DO UPDATE SET
+                    profile_value = excluded.profile_value,
+                    computed_at = excluded.computed_at,
+                    observation_count = excluded.observation_count,
+                    confidence = excluded.confidence""",
+                (key, _json.dumps(value), _utcnow(), observation_count, confidence),
+            )
+            conn.commit()
+
+    def list_developer_profile(self) -> list[dict[str, Any]]:
+        """List all developer profile entries."""
+        import json as _json
+
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT * FROM developer_profile ORDER BY profile_key"
+        ).fetchall()
+        results = []
+        for row in rows:
+            d = dict(row)
+            try:
+                d["profile_value"] = _json.loads(d.get("profile_value", "null"))
+            except (TypeError, ValueError):
+                pass
+            results.append(d)
+        return results
 
     # --- Stats ---
 

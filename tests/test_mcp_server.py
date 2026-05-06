@@ -16,9 +16,15 @@ def _reset_server():
     mcp._episodic = None
     mcp._semantic = None
     mcp._current_session_id = None
+    mcp._session_started_at = None
     mcp._correction_count = 0
     mcp._correction_topics = []
     mcp._git_observer = None
+    mcp._shutting_down = False
+    mcp._recent_responses.clear()
+    mcp._consolidation_running = False
+    mcp._last_consolidation_result = None
+    mcp._intelligence = None
 
 
 class TestMcpProtocol:
@@ -201,7 +207,10 @@ class TestMcpTools:
         content = json.loads(resp["result"]["content"][0]["text"])
         assert "error" in content
 
-    def test_consolidate_not_enough(self):
+    def test_consolidate_not_enough(self, tmp_path, monkeypatch):
+        _reset_server()
+        monkeypatch.setenv("NEUROSYNC_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("NEUROSYNC_DB_BACKEND", "sqlite")
         resp = mcp._handle_request({
             "jsonrpc": "2.0",
             "id": 10,

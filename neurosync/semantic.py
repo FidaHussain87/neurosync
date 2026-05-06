@@ -63,6 +63,7 @@ class SemanticMemory:
         theory = self._db.get_theory(theory_id)
         if not theory:
             return None
+        self._db.save_theory_version(theory, action="confirm")
         theory.confirmation_count += 1
         theory.last_confirmed = _utcnow()
         # Confidence grows asymptotically toward 1.0
@@ -95,6 +96,7 @@ class SemanticMemory:
         theory = self._db.get_theory(theory_id)
         if not theory:
             return None
+        self._db.save_theory_version(theory, action="contradict")
         theory.contradiction_count += 1
         theory.confidence = max(0.0, theory.confidence - 0.15)
         # Update validation status
@@ -174,6 +176,7 @@ class SemanticMemory:
         """Mark a theory as superseded by another."""
         old = self._db.get_theory(old_id)
         if old:
+            self._db.save_theory_version(old, action="supersede")
             old.active = False
             old.superseded_by = new_id
             self._db.save_theory(old)
@@ -185,6 +188,7 @@ class SemanticMemory:
         theory = self._db.get_theory(theory_id)
         if not theory:
             return None
+        self._db.save_theory_version(theory, action="retire")
         theory.active = False
         self._db.save_theory(theory)
         if self._vs:
@@ -216,6 +220,22 @@ class SemanticMemory:
                 self._db.save_theory(theory)
                 affected += 1
         return affected
+
+    # --- Theory Versioning ---
+
+    def get_theory_history(self, theory_id: str, limit: int = 20) -> list[dict[str, Any]]:
+        """Get version history for a theory."""
+        return self._db.get_theory_versions(theory_id, limit=limit)
+
+    def rollback_theory(self, theory_id: str, version_number: int) -> Optional[Theory]:
+        """Roll back a theory to a previous version."""
+        theory = self._db.rollback_theory(theory_id, version_number)
+        if theory and self._vs:
+            if theory.active:
+                self._vs.add_theory(theory)
+            else:
+                self._vs.remove_theory(theory_id)
+        return theory
 
     # --- Contradictions ---
 

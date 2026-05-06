@@ -93,6 +93,79 @@ def cmd_import_starter_pack(args: argparse.Namespace) -> None:
     print(json.dumps(result, indent=2))
 
 
+def cmd_reindex(args: argparse.Namespace) -> None:
+    """Re-populate ChromaDB from the SQLite source of truth."""
+    from neurosync.config import NeuroSyncConfig
+    from neurosync.db import Database
+    from neurosync.vectorstore import VectorStore
+
+    config = NeuroSyncConfig.load()
+    db = Database(config)
+    try:
+        vs = VectorStore(config)
+        if args.reset:
+            vs.reset()
+            print("ChromaDB collections reset before reindex.")
+            # Re-initialize after reset to get fresh collections
+            vs = VectorStore(config)
+        result = vs.reindex_from_db(db, project=args.project or "")
+        print(json.dumps({"reindexed": result}, indent=2))
+    finally:
+        db.close()
+
+
+def cmd_downgrade(args: argparse.Namespace) -> None:
+    """Downgrade the database schema to a target version."""
+    from neurosync.config import NeuroSyncConfig
+
+    config = NeuroSyncConfig.load()
+    target = args.version
+
+    # Determine backend
+    backend = getattr(config, "db_backend", "sqlite")
+
+    if backend == "postgresql":
+        from neurosync.pg_db import CURRENT_SCHEMA_VERSION, PostgresDatabase
+
+        if not args.confirm:
+            print(
+                f"Would downgrade PostgreSQL schema from"
+                f" {CURRENT_SCHEMA_VERSION} to {target}.\n"
+                f"This will DROP tables/indexes added in migrations"
+                f" above version {target}.\n"
+                f"Use --confirm to proceed.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        db = PostgresDatabase(config)
+        try:
+            db.downgrade(target)
+            print(f"PostgreSQL schema downgraded to version {target}.")
+        finally:
+            db.close()
+    else:
+        from neurosync.db import CURRENT_SCHEMA_VERSION, Database
+
+        if not args.confirm:
+            print(
+                f"Would downgrade SQLite schema from"
+                f" {CURRENT_SCHEMA_VERSION} to {target}.\n"
+                f"This will DROP tables/indexes added in migrations"
+                f" above version {target}.\n"
+                f"Use --confirm to proceed.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        db = Database(config)
+        try:
+            db.downgrade(target)
+            print(f"SQLite schema downgraded to version {target}.")
+        finally:
+            db.close()
+
+
 def cmd_reset(args: argparse.Namespace) -> None:
     """Reset all NeuroSync data."""
     if not args.confirm:
@@ -176,6 +249,129 @@ def cmd_graph_status(args: argparse.Namespace) -> None:
         print(json.dumps({"healthy": False, "error": str(e)}))
 
 
+def cmd_export(args: argparse.Namespace) -> None:
+    """Export all NeuroSync data to a JSON file."""
+    from neurosync.config import NeuroSyncConfig
+    from neurosync.db import Database
+
+    config = NeuroSyncConfig.load()
+    db = Database(config)
+    try:
+        sessions = db.list_sessions(limit=100_000)
+        episodes = db.list_episodes(limit=100_000)
+        theories = db.list_theories(active_only=False, limit=100_000)
+
+        data = {
+            "version": "1",
+            "sessions": [
+                {
+                    "id": s.id,
+                    "project": s.project,
+                    "branch": s.branch,
+                    "started_at": s.started_at,
+                    "ended_at": s.ended_at,
+                    "summary": s.summary,
+                }
+                for s in sessions
+            ],
+            "episodes": [
+                {
+                    "id": e.id,
+                    "session_id": e.session_id,
+                    "event_type": e.event_type,
+                    "content": e.content,
+                    "timestamp": e.timestamp,
+                    "signal_weight": e.signal_weight,
+                    "consolidated": e.consolidated,
+                    "cause": e.cause,
+                    "effect": e.effect,
+                    "reasoning": e.reasoning,
+                    "files_touched": e.files_touched,
+                    "layers_touched": e.layers_touched,
+                }
+                for e in episodes
+            ],
+            "theories": [
+                {
+                    "id": t.id,
+                    "content": t.content,
+                    "scope": t.scope,
+                    "scope_qualifier": t.scope_qualifier,
+                    "confidence": t.confidence,
+                    "active": t.active,
+                    "source_episodes": t.source_episodes,
+                }
+                for t in theories
+            ],
+        }
+        with open(args.output, "w") as f:
+            json.dump(data, f, indent=2)
+        print(f"Exported to {args.output}")
+    finally:
+        db.close()
+
+
+def cmd_import(args: argparse.Namespace) -> None:
+    """Import NeuroSync data from a JSON file."""
+    from neurosync.config import NeuroSyncConfig
+    from neurosync.db import Database
+    from neurosync.models import Episode, Session, Theory
+
+    config = NeuroSyncConfig.load()
+    db = Database(config)
+    try:
+        with open(args.input) as f:
+            data = json.load(f)
+
+        imported = {"sessions": 0, "episodes": 0, "theories": 0}
+        for s in data.get("sessions", []):
+            session = Session(
+                id=s["id"],
+                project=s.get("project", ""),
+                branch=s.get("branch", ""),
+                started_at=s.get("started_at", ""),
+                ended_at=s.get("ended_at"),
+                summary=s.get("summary", ""),
+            )
+            db.save_session(session)
+            imported["sessions"] += 1
+
+        for e in data.get("episodes", []):
+            episode = Episode(
+                id=e["id"],
+                session_id=e.get("session_id", ""),
+                event_type=e.get("event_type", "decision"),
+                content=e.get("content", ""),
+                timestamp=e.get("timestamp", ""),
+                signal_weight=e.get("signal_weight", 1.0),
+                consolidated=e.get("consolidated", 0),
+                cause=e.get("cause", ""),
+                effect=e.get("effect", ""),
+                reasoning=e.get("reasoning", ""),
+                files_touched=e.get("files_touched", []),
+                layers_touched=e.get("layers_touched", []),
+            )
+            db.save_episode(episode)
+            imported["episodes"] += 1
+
+        for t in data.get("theories", []):
+            theory = Theory(
+                id=t["id"],
+                content=t.get("content", ""),
+                scope=t.get("scope", "craft"),
+                scope_qualifier=t.get("scope_qualifier", ""),
+                confidence=t.get("confidence", 0.5),
+                active=t.get("active", True),
+                source_episodes=t.get("source_episodes", []),
+            )
+            db.save_theory(theory)
+            imported["theories"] += 1
+
+        print(json.dumps({"imported": imported}, indent=2))
+    finally:
+        db.close()
+
+
 def cmd_generate_protocol(args: argparse.Namespace) -> None:
     """Output the minimal NeuroSync protocol section."""
     from neurosync.protocol import generate_claude_md, generate_protocol_section
@@ -242,6 +438,14 @@ def main() -> None:
     p_import = subparsers.add_parser("import-starter-pack", help="Import a starter pack")
     p_import.add_argument("pack_name", help="Pack name (e.g., python_developer)")
 
+    # export
+    p_export = subparsers.add_parser("export", help="Export all data to JSON file")
+    p_export.add_argument("--output", required=True, help="Output file path")
+
+    # import
+    p_import = subparsers.add_parser("import", help="Import data from JSON file")
+    p_import.add_argument("--input", required=True, help="Input file path")
+
     # generate-protocol
     p_protocol = subparsers.add_parser(
         "generate-protocol",
@@ -261,6 +465,24 @@ def main() -> None:
     # graph-status
     subparsers.add_parser("graph-status", help="Show Neo4j graph health")
 
+    # reindex
+    p_reindex = subparsers.add_parser(
+        "reindex", help="Re-populate ChromaDB from SQLite source of truth"
+    )
+    p_reindex.add_argument("--project", default=None, help="Project name for episode metadata")
+    p_reindex.add_argument(
+        "--reset", action="store_true", help="Reset ChromaDB collections before reindexing"
+    )
+
+    # downgrade
+    p_downgrade = subparsers.add_parser("downgrade", help="Downgrade database schema")
+    p_downgrade.add_argument(
+        "--version", type=int, required=True, help="Target schema version"
+    )
+    p_downgrade.add_argument(
+        "--confirm", action="store_true", help="Confirm downgrade"
+    )
+
     # reset
     p_reset = subparsers.add_parser("reset", help="Reset all NeuroSync data")
     p_reset.add_argument("--confirm", action="store_true", help="Confirm reset")
@@ -272,10 +494,14 @@ def main() -> None:
         "status": cmd_status,
         "consolidate": cmd_consolidate,
         "import-starter-pack": cmd_import_starter_pack,
+        "export": cmd_export,
+        "import": cmd_import,
         "generate-protocol": cmd_generate_protocol,
         "install-hook": cmd_install_hook,
         "graph-sync": cmd_graph_sync,
         "graph-status": cmd_graph_status,
+        "reindex": cmd_reindex,
+        "downgrade": cmd_downgrade,
         "reset": cmd_reset,
     }
 

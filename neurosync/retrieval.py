@@ -132,16 +132,72 @@ class RetrievalPipeline:
                 )
                 tokens_used += cost
 
+        # Cross-project theory discovery
+        cross_project: list[dict[str, Any]] = []
+        if project and self._vs and tokens_used < max_tokens:
+            cross_project = self._discover_cross_project_theories(
+                query, project, max_tokens - tokens_used, scored
+            )
+            for cp in cross_project:
+                tokens_used += estimate_tokens(cp.get("content", ""))
+
         return {
             "primary": primary,
             "supporting": supporting,
             "recent_episodes": recent,
             "continuation": continuation,
             "parent_theory": parent_theory,
+            "cross_project_theories": cross_project,
             "tokens_used": tokens_used,
             "theories_considered": len(theory_results),
             "theories_filtered_by_familiarity": len(theory_results) - len(scored),
         }
+
+    def _discover_cross_project_theories(
+        self,
+        query: str,
+        current_project: str,
+        remaining_tokens: int,
+        already_scored: list,
+    ) -> list[dict[str, Any]]:
+        """Find relevant theories from other projects or broader scopes."""
+        if not self._vs or remaining_tokens <= 0:
+            return []
+
+        already_ids = {s[1].id for s in already_scored}
+        results = self._vs.search_theories(query, n_results=15, active_only=True)
+        cross_project: list[dict[str, Any]] = []
+        tokens_used = 0
+
+        for result in results:
+            if result["id"] in already_ids:
+                continue
+            theory = self._db.get_theory(result["id"])
+            if not theory or not theory.active:
+                continue
+            # Skip theories belonging to the current project
+            if theory.scope == "project" and theory.scope_qualifier == current_project:
+                continue
+            # Include: domain/craft theories, or project theories from OTHER projects
+            if theory.scope in ("domain", "craft") or (
+                theory.scope == "project" and theory.scope_qualifier != current_project
+            ):
+                cost = estimate_tokens(theory.content)
+                if tokens_used + cost > remaining_tokens:
+                    break
+                distance = result.get("distance", 0.0)
+                if distance > 0.6:
+                    continue
+                score = theory.confidence / (1.0 + distance)
+                entry = format_theory_result(theory, score)
+                entry["source_project"] = theory.scope_qualifier
+                entry["cross_project"] = True
+                cross_project.append(entry)
+                tokens_used += cost
+                if len(cross_project) >= 3:
+                    break
+
+        return cross_project
 
     def format_for_context(self, recall_result: dict[str, Any]) -> str:
         """Format recall result as a readable context string for injection.
@@ -205,6 +261,7 @@ class RetrievalPipeline:
             "recent_episodes": [],
             "continuation": None,
             "parent_theory": None,
+            "cross_project_theories": [],
             "tokens_used": 0,
             "theories_considered": 0,
             "theories_filtered_by_familiarity": 0,

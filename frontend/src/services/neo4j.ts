@@ -102,6 +102,7 @@ function extractFromRecords(records: Neo4jRecord[]): GraphData {
   function addRelationship(rel: Relationship, startNode?: Node, endNode?: Node) {
     const srcId = startNode ? nodeId(startNode) : rel.startNodeElementId;
     const tgtId = endNode ? nodeId(endNode) : rel.endNodeElementId;
+    if (srcId === tgtId) return;
     const linkId = `${srcId}-${rel.type}-${tgtId}`;
     if (!linkSet.has(linkId)) {
       linkSet.set(linkId, {
@@ -164,7 +165,7 @@ function extractFromRecords(records: Neo4jRecord[]): GraphData {
       if (isRelationship(value)) {
         const srcId = elementIdMap.get(value.startNodeElementId);
         const tgtId = elementIdMap.get(value.endNodeElementId);
-        if (srcId && tgtId) {
+        if (srcId && tgtId && srcId !== tgtId) {
           const linkId = `${srcId}-${value.type}-${tgtId}`;
           if (!linkSet.has(linkId)) {
             linkSet.set(linkId, {
@@ -180,7 +181,7 @@ function extractFromRecords(records: Neo4jRecord[]): GraphData {
           if (isRelationship(item)) {
             const srcId = elementIdMap.get(item.startNodeElementId);
             const tgtId = elementIdMap.get(item.endNodeElementId);
-            if (srcId && tgtId) {
+            if (srcId && tgtId && srcId !== tgtId) {
               const linkId = `${srcId}-${item.type}-${tgtId}`;
               if (!linkSet.has(linkId)) {
                 linkSet.set(linkId, {
@@ -247,7 +248,7 @@ export async function fetchOverview(): Promise<GraphData> {
     runQuery(`
       MATCH (t:Theory {active: true})
       OPTIONAL MATCH (t)-[r1:EXTRACTED_FROM]->(e:Episode)
-      OPTIONAL MATCH (t)-[r2:RELATED_TO|PARENT_OF|SUPERSEDED_BY]->(t2:Theory)
+      OPTIONAL MATCH (t)-[r2:RELATED_TO|PARENT_OF|SUPERSEDED_BY]->(t2:Theory {active: true})
       RETURN t, r1, e, r2, t2
       LIMIT 300
     `),

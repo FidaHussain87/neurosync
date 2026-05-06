@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 import json
+import signal
 import sys
+import threading
+import time
 import traceback
 from typing import Any, Optional
 
@@ -17,7 +21,7 @@ from neurosync.failure import FailureModel
 from neurosync.forgetting import ForgettingEngine
 from neurosync.git_observer import GitObserver
 from neurosync.hierarchy import TheoryHierarchy
-from neurosync.logging import configure_logging, get_logger
+from neurosync.logging import configure_logging, get_logger, metrics
 from neurosync.models import EPISODE_TYPES
 from neurosync.quality import quality_warning
 from neurosync.retrieval import RetrievalPipeline
@@ -253,13 +257,13 @@ TOOLS = [
     },
     {
         "name": "neurosync_theories",
-        "description": "Browse, inspect, retire, relate, or view hierarchy graph of theories.",
+        "description": "Browse, inspect, retire, relate, view history, rollback, or view hierarchy graph of theories.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["list", "detail", "retire", "relate", "graph"],
+                    "enum": ["list", "detail", "retire", "relate", "graph", "history", "rollback"],
                     "default": "list",
                 },
                 "scope": {"type": "string", "enum": ["project", "domain", "craft"]},
@@ -269,6 +273,10 @@ TOOLS = [
                     "type": "array",
                     "items": {"type": "string"},
                     "description": "Theory IDs to link (for relate action)",
+                },
+                "version_number": {
+                    "type": "integer",
+                    "description": "Target version number (for rollback action)",
                 },
                 "limit": {"type": "integer", "default": 20},
             },
@@ -363,6 +371,44 @@ def _require_init(*components: Any) -> None:
             raise RuntimeError("NeuroSync server not initialized. Call _init() first.")
 
 
+# ---------------------------------------------------------------------------
+# Input bounds — prevent OOM from oversized payloads
+# ---------------------------------------------------------------------------
+
+MAX_CONTENT_CHARS = 50_000
+MAX_CONTEXT_CHARS = 10_000
+MAX_QUERY_CHARS = 5_000
+MAX_EVENTS_PER_RECORD = 100
+MAX_FILES_PER_EVENT = 50
+MAX_ARRAY_ITEMS = 50
+
+
+class InputTooLargeError(ValueError):
+    """Raised when an input field exceeds the allowed bounds."""
+
+
+def _validate_string(value: str, field_name: str, max_chars: int) -> str:
+    if not isinstance(value, str):
+        return ""
+    if len(value) > max_chars:
+        raise InputTooLargeError(
+            f"Field '{field_name}' exceeds maximum length ({len(value):,} > {max_chars:,} chars)"
+        )
+    return value
+
+
+def _validate_array(value: list, field_name: str, max_items: int) -> list:
+    if not isinstance(value, list):
+        return []
+    if len(value) > max_items:
+        raise InputTooLargeError(
+            f"Field '{field_name}' exceeds maximum items ({len(value)} > {max_items})"
+        )
+    return value
+
+
+_SESSION_TTL_SECONDS = 7200
+
 _config: Optional[NeuroSyncConfig] = None
 _db: Optional[Database] = None
 _vs: Optional[VectorStore] = None
@@ -377,9 +423,16 @@ _user_model: Optional[UserModel] = None
 _retrieval: Optional[RetrievalPipeline] = None
 _graph: Optional[Any] = None
 _current_session_id: Optional[str] = None
+_session_started_at: Optional[float] = None
 _correction_count: int = 0
 _correction_topics: list[str] = []  # Topics corrected this session (for targeted penalization)
 _git_observer: Optional[GitObserver] = None
+_session_lock = threading.Lock()
+_send_lock = threading.Lock()
+_consolidation_lock = threading.Lock()
+_consolidation_running = False
+_last_consolidation_result: Optional[dict[str, Any]] = None
+_intelligence: Any = None
 
 
 def _init() -> None:
@@ -390,6 +443,13 @@ def _init() -> None:
         return
 
     config = NeuroSyncConfig.load()
+    validation_errors = config.validate()
+    if validation_errors:
+        for err in validation_errors:
+            logger.error("Configuration error: %s", err)
+        raise RuntimeError(
+            f"NeuroSync configuration invalid: {'; '.join(validation_errors)}"
+        )
     config.ensure_dirs()
     configure_logging()
 
@@ -431,7 +491,28 @@ def _init() -> None:
     user_model = UserModel(db)
     retrieval = RetrievalPipeline(db, vs, user_model=user_model, semantic=semantic)
 
+    # Detect and close orphaned sessions before proceeding
+    try:
+        orphaned = db.close_orphaned_sessions(max_age_hours=24)
+        if orphaned:
+            logger.info("Closed %d orphaned session(s) from prior crash", len(orphaned))
+    except Exception:
+        logger.debug("Orphan session detection failed", exc_info=True)
+
+    # Intelligence layer — background analysis engine
+    intelligence = None
+    try:
+        from neurosync.intelligence import IntelligenceEngine
+
+        intelligence = IntelligenceEngine(db, vs)
+        intel_thread = threading.Thread(target=intelligence.run_loop, daemon=True)
+        intel_thread.start()
+        logger.info("Intelligence engine started")
+    except Exception:
+        logger.debug("Intelligence engine init failed", exc_info=True)
+
     # Atomic commit — all or nothing
+    global _intelligence
     _config = config
     _db = db
     _vs = vs
@@ -444,23 +525,27 @@ def _init() -> None:
     _hierarchy = hierarchy
     _user_model = user_model
     _retrieval = retrieval
+    _intelligence = intelligence
 
 
 def _ensure_session(project: str = "", branch: str = "") -> str:
-    global _current_session_id, _git_observer
-    if _current_session_id:
-        return _current_session_id
-    _require_init(_episodic)
-    git_info = detect_git_info()
-    project = project or git_info.get("project", "")
-    branch = branch or git_info.get("branch", "")
-    session = _episodic.start_session(project=project, branch=branch)
-    _current_session_id = session.id
-    # Capture git baseline for passive observation
-    if _git_observer is None:
-        _git_observer = GitObserver()
-        _git_observer.capture_baseline()
-    return session.id
+    global _current_session_id, _git_observer, _session_started_at
+    with _session_lock:
+        if _current_session_id and _session_started_at and time.time() - _session_started_at > _SESSION_TTL_SECONDS:
+            _rotate_session()
+        if _current_session_id:
+            return _current_session_id
+        _require_init(_episodic)
+        git_info = detect_git_info()
+        project = project or git_info.get("project", "")
+        branch = branch or git_info.get("branch", "")
+        session = _episodic.start_session(project=project, branch=branch)
+        _current_session_id = session.id
+        _session_started_at = time.time()
+        if _git_observer is None:
+            _git_observer = GitObserver()
+            _git_observer.capture_baseline()
+        return session.id
 
 
 def _rotate_session() -> None:
@@ -470,7 +555,7 @@ def _rotate_session() -> None:
     "call recall at session start" — making it the natural session boundary.
     If no session exists yet (first call), this is a no-op.
     """
-    global _current_session_id, _correction_count, _correction_topics, _git_observer
+    global _current_session_id, _correction_count, _correction_topics, _git_observer, _session_started_at
     if _current_session_id is None:
         return
     # Capture git delta and end the old session
@@ -492,9 +577,12 @@ def _rotate_session() -> None:
         logger.debug("Error during session rotation cleanup", exc_info=True)
     # Reset per-session state
     _current_session_id = None
+    _session_started_at = None
     _correction_count = 0
     _correction_topics = []
     _git_observer = None
+    if _intelligence:
+        _intelligence.reset_session()
 
 
 def _get_graph():
@@ -519,9 +607,12 @@ def _get_graph():
         return None
 
 
-def _try_auto_consolidate() -> Optional[dict]:
-    """Run auto-consolidation if enabled and threshold is met. Returns result or None."""
-    if _config and _config.auto_consolidation_enabled and _db and _episodic and _semantic:
+def _consolidation_worker() -> None:
+    """Background worker: runs consolidation + forgetting + graph sync."""
+    global _consolidation_running, _last_consolidation_result
+    try:
+        if not (_config and _db and _episodic and _semantic):
+            return
         result = maybe_consolidate(
             _db,
             _vs,
@@ -530,14 +621,12 @@ def _try_auto_consolidate() -> Optional[dict]:
             threshold=_config.auto_consolidation_threshold,
             min_episodes=_config.consolidation_min_episodes,
         )
-        # Run forgetting pass after consolidation to prune stale episodes and decay theories
         if result and _forgetting:
             try:
                 forget_result = _forgetting.run_forgetting_pass()
                 result["forgetting"] = forget_result
             except Exception:
                 logger.debug("Forgetting pass failed after consolidation", exc_info=True)
-        # Auto-sync new theories to Neo4j graph if available
         if result:
             try:
                 graph = _get_graph()
@@ -546,8 +635,41 @@ def _try_auto_consolidate() -> Optional[dict]:
                     result["graph_sync"] = sync_result
             except Exception:
                 logger.debug("Graph sync failed after consolidation", exc_info=True)
-        return result
-    return None
+        if result:
+            _last_consolidation_result = result
+    except Exception:
+        logger.warning("Background consolidation failed", exc_info=True)
+    finally:
+        with _consolidation_lock:
+            _consolidation_running = False
+
+
+def _try_auto_consolidate() -> Optional[dict]:
+    """Trigger non-blocking auto-consolidation in a background thread.
+
+    Returns the result of the *previous* consolidation if one completed,
+    so the MCP response is never blocked by the consolidation pipeline.
+    """
+    global _consolidation_running, _last_consolidation_result
+    if not (_config and _config.auto_consolidation_enabled and _db and _episodic and _semantic):
+        return None
+
+    # Return last result if available (from a prior background run)
+    result = _last_consolidation_result
+    _last_consolidation_result = None
+
+    # Dispatch new background consolidation if not already running
+    with _consolidation_lock:
+        if _consolidation_running:
+            return result
+        pending = _db.count_episodes(consolidated=0)
+        if pending < (_config.auto_consolidation_threshold or 20):
+            return result
+        _consolidation_running = True
+
+    thread = threading.Thread(target=_consolidation_worker, daemon=True)
+    thread.start()
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -562,7 +684,7 @@ def handle_recall(params: dict[str, Any]) -> dict[str, Any]:
     git_info = detect_git_info()
     project = params.get("project") or git_info.get("project", "")
     branch = params.get("branch") or git_info.get("branch", "")
-    context = params.get("context", "")
+    context = _validate_string(params.get("context", ""), "context", MAX_CONTEXT_CHARS)
     max_tokens = params.get("max_tokens", 500)
     # Use RetrievalPipeline (includes UserModel filtering, parent context, continuations)
     result = _retrieval.recall(
@@ -612,13 +734,24 @@ def handle_recall(params: dict[str, Any]) -> dict[str, Any]:
                 hierarchy_ctx = _hierarchy.graph_aware_recall(theory)
                 if hierarchy_ctx.get("ancestors") or hierarchy_ctx.get("children"):
                     result["hierarchy_context"] = hierarchy_ctx
+    # Enrich with intelligence insights
+    if _intelligence:
+        try:
+            insights = _intelligence.get_relevant_insights(project=project, context=context)
+            if insights:
+                result["insights"] = [
+                    {"type": i["insight_type"], "content": i["content"], "confidence": i["confidence"]}
+                    for i in insights
+                ]
+        except Exception:
+            logger.debug("Intelligence enrichment failed", exc_info=True)
     return _add_protocol_hint("neurosync_recall", result)
 
 
 def handle_record(params: dict[str, Any]) -> dict[str, Any]:
     _require_init(_episodic)
-    events = params.get("events", [])
-    summary = params.get("session_summary", "")
+    events = _validate_array(params.get("events", []), "events", MAX_EVENTS_PER_RECORD)
+    summary = _validate_string(params.get("session_summary", ""), "session_summary", MAX_CONTENT_CHARS)
     project = params.get("project", "")
     branch = params.get("branch", "")
     session_id = _ensure_session(project=project, branch=branch)
@@ -712,6 +845,19 @@ def handle_record(params: dict[str, Any]) -> dict[str, Any]:
     auto_result = _try_auto_consolidate()
     if auto_result:
         result["auto_consolidation"] = auto_result
+    # Proactive intelligence warnings
+    if _intelligence and _session_started_at:
+        try:
+            proactive = _intelligence.get_proactive_warnings(
+                project=project, session_start=_session_started_at
+            )
+            if proactive:
+                result["proactive_warnings"] = [
+                    {"type": w["category"], "content": w["content"]}
+                    for w in proactive
+                ]
+        except Exception:
+            logger.debug("Intelligence warnings failed", exc_info=True)
     return _add_protocol_hint("neurosync_record", result)
 
 
@@ -810,11 +956,11 @@ def _topic_overlap(correction_text: str, theory_text: str) -> bool:
 
 def handle_remember(params: dict[str, Any]) -> dict[str, Any]:
     _require_init(_episodic)
-    content = params.get("content", "")
+    content = _validate_string(params.get("content", ""), "content", MAX_CONTENT_CHARS)
     event_type = params.get("type", "explicit")
-    cause = params.get("cause", "")
-    effect = params.get("effect", "")
-    reasoning = params.get("reasoning", "")
+    cause = _validate_string(params.get("cause", ""), "cause", MAX_CONTENT_CHARS)
+    effect = _validate_string(params.get("effect", ""), "effect", MAX_CONTENT_CHARS)
+    reasoning = _validate_string(params.get("reasoning", ""), "reasoning", MAX_CONTENT_CHARS)
     importance = params.get("importance", 0)
     if not content.strip():
         return {"error": "Content is required"}
@@ -853,7 +999,7 @@ def handle_remember(params: dict[str, Any]) -> dict[str, Any]:
 
 def handle_query(params: dict[str, Any]) -> dict[str, Any]:
     _require_init(_episodic, _semantic, _causal, _failure)
-    query = params.get("query", "")
+    query = _validate_string(params.get("query", ""), "query", MAX_QUERY_CHARS)
     scope = params.get("scope", "all")
     mode = params.get("mode", "semantic")
     project = params.get("project")
@@ -892,8 +1038,8 @@ def handle_query(params: dict[str, Any]) -> dict[str, Any]:
 def handle_correct(params: dict[str, Any]) -> dict[str, Any]:
     global _correction_count, _correction_topics
     _require_init(_episodic, _semantic, _failure)
-    wrong = params.get("wrong", "")
-    right = params.get("right", "")
+    wrong = _validate_string(params.get("wrong", ""), "wrong", MAX_CONTENT_CHARS)
+    right = _validate_string(params.get("right", ""), "right", MAX_CONTENT_CHARS)
     theory_id = params.get("theory_id")
     if not wrong.strip() or not right.strip():
         return {"error": "Both 'wrong' and 'right' are required"}
@@ -960,12 +1106,40 @@ def handle_status(params: dict[str, Any]) -> dict[str, Any]:
             result["graph"]["healthy"] = True
         except Exception as e:
             result["graph"] = {"healthy": False, "error": str(e)}
+    if _intelligence:
+        try:
+            result["intelligence"] = _intelligence.get_stats()
+            result["intelligence"]["developer_profile"] = _intelligence.get_developer_profile()
+        except Exception:
+            result["intelligence"] = {"healthy": False}
     return result
 
 
 def handle_theories(params: dict[str, Any]) -> dict[str, Any]:
     _require_init(_semantic, _hierarchy)
     action = params.get("action", "list")
+    if action == "history":
+        theory_id = params.get("theory_id")
+        if not theory_id:
+            return {"error": "theory_id required for history action"}
+        versions = _semantic.get_theory_history(theory_id, limit=params.get("limit", 20))
+        return {"theory_id": theory_id, "versions": versions, "count": len(versions)}
+    if action == "rollback":
+        theory_id = params.get("theory_id")
+        version_number = params.get("version_number")
+        if not theory_id:
+            return {"error": "theory_id required for rollback action"}
+        if version_number is None:
+            return {"error": "version_number required for rollback action"}
+        theory = _semantic.rollback_theory(theory_id, int(version_number))
+        if not theory:
+            return {"error": f"Theory {theory_id} version {version_number} not found"}
+        return {
+            "message": f"Theory {theory_id} rolled back to version {version_number}",
+            "theory_id": theory_id,
+            "confidence": theory.confidence,
+            "content": theory.content[:200],
+        }
     if action == "graph":
         theory_id = params.get("theory_id")
         if not theory_id:
@@ -1086,11 +1260,11 @@ def handle_consolidate(params: dict[str, Any]) -> dict[str, Any]:
 
 def handle_handoff(params: dict[str, Any]) -> dict[str, Any]:
     _require_init(_episodic)
-    goal = params.get("goal", "")
-    accomplished = params.get("accomplished", "")
-    remaining = params.get("remaining", "")
-    next_step = params.get("next_step", "")
-    blockers = params.get("blockers", "")
+    goal = _validate_string(params.get("goal", ""), "goal", MAX_CONTENT_CHARS)
+    accomplished = _validate_string(params.get("accomplished", ""), "accomplished", MAX_CONTENT_CHARS)
+    remaining = _validate_string(params.get("remaining", ""), "remaining", MAX_CONTENT_CHARS)
+    next_step = _validate_string(params.get("next_step", ""), "next_step", MAX_CONTENT_CHARS)
+    blockers = _validate_string(params.get("blockers", ""), "blockers", MAX_CONTENT_CHARS)
     if not all([goal.strip(), accomplished.strip(), remaining.strip(), next_step.strip()]):
         return {"error": "goal, accomplished, remaining, and next_step are all required"}
     session_id = _ensure_session()
@@ -1197,10 +1371,11 @@ _HANDLERS = {
 
 
 def _send(msg: dict[str, Any]) -> None:
-    """Send a JSON-RPC message to stdout."""
+    """Send a JSON-RPC message to stdout (thread-safe)."""
     data = json.dumps(msg)
-    sys.stdout.write(data + "\n")
-    sys.stdout.flush()
+    with _send_lock:
+        sys.stdout.write(data + "\n")
+        sys.stdout.flush()
 
 
 def _error_response(req_id: Any, code: int, message: str) -> dict[str, Any]:
@@ -1216,6 +1391,11 @@ def _handle_request(request: dict[str, Any]) -> Optional[dict[str, Any]]:
     req_id = request.get("id")
     method = request.get("method", "")
     params = request.get("params", {})
+
+    # Request-level dedup: return cached response for retried request IDs
+    cached = _check_request_dedup(req_id)
+    if cached is not None:
+        return cached
 
     if method == "initialize":
         return _success_response(
@@ -1244,14 +1424,30 @@ def _handle_request(request: dict[str, Any]) -> Optional[dict[str, Any]]:
             return _error_response(req_id, -32601, f"Unknown tool: {tool_name}")
         try:
             _init()
+            start = time.time()
             result = handler(tool_args)
-            return _success_response(
+            duration_ms = (time.time() - start) * 1000
+            metrics.increment(f"tool.{tool_name}")
+            metrics.record_latency(f"tool.{tool_name}", duration_ms)
+            response = _success_response(
                 req_id,
                 {
                     "content": [{"type": "text", "text": json.dumps(result, indent=2)}],
                 },
             )
+            _cache_response(req_id, response)
+            return response
+        except InputTooLargeError as e:
+            metrics.increment("error.input_too_large")
+            return _success_response(
+                req_id,
+                {
+                    "content": [{"type": "text", "text": json.dumps({"error": str(e)})}],
+                    "isError": True,
+                },
+            )
         except Exception as e:
+            metrics.increment(f"error.{tool_name}")
             tb = traceback.format_exc()
             logger.error("Error in %s: %s", tool_name, tb)
             return _success_response(
@@ -1271,22 +1467,112 @@ def _handle_request(request: dict[str, Any]) -> Optional[dict[str, Any]]:
     return None
 
 
+_shutting_down = False
+_executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
+
+# Request-level deduplication: track recent request IDs to catch retries
+_recent_responses: dict[Any, dict[str, Any]] = {}
+_DEDUP_CACHE_SIZE = 100
+
+
+def _check_request_dedup(req_id: Any) -> Optional[dict[str, Any]]:
+    """Return cached response if this request ID was already processed."""
+    if req_id is None:
+        return None
+    return _recent_responses.get(req_id)
+
+
+def _cache_response(req_id: Any, response: dict[str, Any]) -> None:
+    """Cache a response for dedup. Evicts oldest entries when full."""
+    if req_id is None:
+        return
+    _recent_responses[req_id] = response
+    if len(_recent_responses) > _DEDUP_CACHE_SIZE:
+        oldest_key = next(iter(_recent_responses))
+        del _recent_responses[oldest_key]
+
+
+def _shutdown_handler(signum: int, frame: Any) -> None:
+    """Handle SIGTERM/SIGINT for graceful shutdown."""
+    global _shutting_down
+    if _shutting_down:
+        return
+    _shutting_down = True
+    logger.info("Shutdown signal received (signal %d), cleaning up...", signum)
+    _cleanup()
+    sys.exit(0)
+
+
+def _cleanup() -> None:
+    """Flush pending state and close connections."""
+    global _current_session_id, _executor
+    try:
+        if _executor:
+            _executor.shutdown(wait=False)
+            _executor = None
+    except Exception:
+        logger.debug("Error shutting down thread pool during shutdown", exc_info=True)
+    try:
+        if _current_session_id and _episodic:
+            _episodic.end_session(_current_session_id)
+            _current_session_id = None
+    except Exception:
+        logger.debug("Error ending session during shutdown", exc_info=True)
+    try:
+        if _db:
+            _db.close()
+    except Exception:
+        logger.debug("Error closing database during shutdown", exc_info=True)
+    try:
+        if _graph and _graph is not False:
+            _graph.close()
+    except Exception:
+        logger.debug("Error closing graph during shutdown", exc_info=True)
+
+
+def _dispatch_tool_call(request: dict[str, Any]) -> None:
+    """Execute a tools/call request in a worker thread and send the response."""
+    if _shutting_down:
+        return
+    response = _handle_request(request)
+    if response is not None:
+        _send(response)
+
+
 def serve() -> None:
     """Run the MCP server on stdio."""
+    global _executor
     configure_logging()
+    signal.signal(signal.SIGTERM, _shutdown_handler)
+    signal.signal(signal.SIGINT, _shutdown_handler)
     logger.info("NeuroSync MCP server starting on stdio...")
-    for line in sys.stdin:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            request = json.loads(line)
-        except json.JSONDecodeError:
-            _send(_error_response(None, -32700, "Parse error"))
-            continue
-        response = _handle_request(request)
-        if response is not None:
-            _send(response)
+    _executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
+    try:
+        for line in sys.stdin:
+            if _shutting_down:
+                break
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                request = json.loads(line)
+            except json.JSONDecodeError:
+                _send(_error_response(None, -32700, "Parse error"))
+                continue
+            method = request.get("method", "")
+            if method == "tools/call":
+                # Submit tool calls to the thread pool for concurrent execution
+                _executor.submit(_dispatch_tool_call, request)
+            else:
+                # Fast methods (initialize, tools/list, ping) run on main thread
+                response = _handle_request(request)
+                if response is not None:
+                    _send(response)
+    except (EOFError, KeyboardInterrupt):
+        pass
+    finally:
+        if not _shutting_down:
+            _cleanup()
 
 
 if __name__ == "__main__":

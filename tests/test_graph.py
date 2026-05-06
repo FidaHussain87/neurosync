@@ -471,9 +471,9 @@ class TestConfigPasswordMasking:
         assert "secret123" not in r
         assert "***" in r
 
-    def test_repr_shows_empty_password(self):
+    def test_repr_shows_empty_password(self, monkeypatch):
         """Config __repr__ shows empty string when password is empty."""
-
+        monkeypatch.delenv("NEUROSYNC_NEO4J_PASSWORD", raising=False)
         config = NeuroSyncConfig(neo4j_password="")
         r = repr(config)
         assert "***" not in r

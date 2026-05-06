@@ -35,7 +35,27 @@ class TestEstimateTokens:
 
     def test_long_text(self):
         text = "a" * 400
-        assert estimate_tokens(text) == 100
+        result = estimate_tokens(text)
+        assert result >= 1
+        assert result <= 400
+
+    def test_proportional(self):
+        short = estimate_tokens("hello")
+        long = estimate_tokens("hello " * 100)
+        assert long > short
+
+    def test_fallback_when_tiktoken_unavailable(self):
+        import neurosync.working as w
+
+        old_encoder = w._encoder
+        old_loaded = w._encoder_loaded
+        w._encoder = None
+        w._encoder_loaded = True
+        try:
+            assert estimate_tokens("a" * 400) == 100
+        finally:
+            w._encoder = old_encoder
+            w._encoder_loaded = old_loaded
 
 
 class TestFormatTheoryResult:
