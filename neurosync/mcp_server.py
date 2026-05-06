@@ -24,6 +24,7 @@ from neurosync.hierarchy import TheoryHierarchy
 from neurosync.logging import configure_logging, get_logger, metrics
 from neurosync.models import EPISODE_TYPES
 from neurosync.quality import quality_warning
+from neurosync.replay import ReplayMatcher, detect_replay_from_session
 from neurosync.retrieval import RetrievalPipeline
 from neurosync.semantic import SemanticMemory
 from neurosync.user_model import UserModel
@@ -745,6 +746,28 @@ def handle_recall(params: dict[str, Any]) -> dict[str, Any]:
                 ]
         except Exception:
             logger.debug("Intelligence enrichment failed", exc_info=True)
+    # Surface relevant cognitive replays when debugging context detected
+    if context and _db:
+        try:
+            matcher = ReplayMatcher(_db)
+            # Extract domains from context for matching
+            from neurosync.intelligence.domains import classify_episode as _classify
+
+            ctx_domains = _classify(content=context)
+            replays = matcher.find_relevant(content=context, domains=ctx_domains, limit=2)
+            if replays:
+                result["cognitive_replays"] = []
+                for r in replays:
+                    _db.increment_replay_surfaced(r.id)
+                    result["cognitive_replays"].append({
+                        "id": r.id,
+                        "strategy": r.strategy_type,
+                        "problem": r.problem_signature,
+                        "advice": r.human_readable(),
+                        "confidence": r.confidence,
+                    })
+        except Exception:
+            logger.debug("Replay surfacing failed", exc_info=True)
     return _add_protocol_hint("neurosync_recall", result)
 
 
@@ -841,6 +864,20 @@ def handle_record(params: dict[str, Any]) -> dict[str, Any]:
         result["observed_episodes"] = observed_count
     if warnings:
         result["quality_warnings"] = warnings
+    # Cognitive replay detection — capture reasoning paths from debugging sessions
+    try:
+        session_episodes = _db.list_episodes(session_id=session_id, limit=50)
+        replay = detect_replay_from_session(session_episodes)
+        if replay:
+            _db.save_replay(replay)
+            result["cognitive_replay"] = {
+                "id": replay.id,
+                "strategy": replay.strategy_type,
+                "steps": len(replay.steps),
+                "shortcut": replay.shortcut,
+            }
+    except Exception:
+        logger.debug("Replay detection failed", exc_info=True)
     # Auto-consolidation
     auto_result = _try_auto_consolidate()
     if auto_result:
@@ -1098,6 +1135,7 @@ def handle_status(params: dict[str, Any]) -> dict[str, Any]:
         "correction_count": _correction_count,
         "causal_links": _db.count_causal_links(),
         "failure_records": _db.count_failure_records(),
+        "cognitive_replays": _db.count_replays(),
     }
     graph = _get_graph()
     if graph:

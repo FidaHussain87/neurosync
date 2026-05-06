@@ -9,7 +9,10 @@ from __future__ import annotations
 import json
 import re
 import threading
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
+
+if TYPE_CHECKING:
+    from neurosync.replay import CognitiveReplay
 
 from neurosync.config import NeuroSyncConfig
 from neurosync.logging import get_logger
@@ -27,7 +30,7 @@ from neurosync.models import (
 
 logger = get_logger("pg_db")
 
-CURRENT_SCHEMA_VERSION = 8
+CURRENT_SCHEMA_VERSION = 10
 
 # PostgreSQL schema — uses SERIAL instead of AUTOINCREMENT, BOOLEAN instead of
 # INTEGER for booleans, and native JSON handling.
@@ -504,6 +507,51 @@ class PostgresDatabase:
                 "CREATE INDEX IF NOT EXISTS idx_devprofile_key"
                 " ON developer_profile(profile_key)"
             )
+        if from_version < 9:
+            cur.execute(
+                "ALTER TABLE episodes ADD COLUMN IF NOT EXISTS domains JSONB DEFAULT '[]'"
+            )
+            cur.execute(
+                """CREATE TABLE IF NOT EXISTS episode_domains (
+                    episode_id TEXT NOT NULL REFERENCES episodes(id),
+                    domain TEXT NOT NULL,
+                    PRIMARY KEY (episode_id, domain)
+                )"""
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_episode_domains_domain"
+                " ON episode_domains(domain)"
+            )
+        if from_version < 10:
+            cur.execute(
+                """CREATE TABLE IF NOT EXISTS cognitive_replays (
+                    id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    strategy_type TEXT NOT NULL DEFAULT 'elimination',
+                    problem_signature TEXT NOT NULL DEFAULT '',
+                    steps JSONB NOT NULL DEFAULT '[]',
+                    shortcut TEXT DEFAULT '',
+                    domains JSONB DEFAULT '[]',
+                    files_involved JSONB DEFAULT '[]',
+                    source_episode_ids JSONB DEFAULT '[]',
+                    created_at TEXT NOT NULL,
+                    times_surfaced INTEGER DEFAULT 0,
+                    times_helpful INTEGER DEFAULT 0,
+                    confidence REAL DEFAULT 0.5
+                )"""
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_replays_session"
+                " ON cognitive_replays(session_id)"
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_replays_strategy"
+                " ON cognitive_replays(strategy_type)"
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_replays_confidence"
+                " ON cognitive_replays(confidence)"
+            )
 
     def close(self) -> None:
         if self._pool:
@@ -591,13 +639,14 @@ class PostgresDatabase:
                (id, session_id, timestamp, event_type, content, context,
                 files_touched, layers_touched, signal_weight, consolidated,
                 consolidated_at, cause, effect, reasoning, quality_score, metadata,
-                reinforcement_count, last_accessed, structural_fingerprint)
-               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                reinforcement_count, last_accessed, structural_fingerprint, domains)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                ON CONFLICT (id) DO UPDATE SET
                signal_weight=EXCLUDED.signal_weight, consolidated=EXCLUDED.consolidated,
                consolidated_at=EXCLUDED.consolidated_at, quality_score=EXCLUDED.quality_score,
                metadata=EXCLUDED.metadata, reinforcement_count=EXCLUDED.reinforcement_count,
-               last_accessed=EXCLUDED.last_accessed, structural_fingerprint=EXCLUDED.structural_fingerprint""",
+               last_accessed=EXCLUDED.last_accessed, structural_fingerprint=EXCLUDED.structural_fingerprint,
+               domains=EXCLUDED.domains""",
             (
                 episode.id,
                 episode.session_id,
@@ -618,8 +667,20 @@ class PostgresDatabase:
                 episode.reinforcement_count,
                 episode.last_accessed,
                 episode.structural_fingerprint,
+                self._to_json(episode.domains),
             ),
         )
+        # Maintain episode_domains junction table
+        self._execute(
+            "DELETE FROM episode_domains WHERE episode_id = %s", (episode.id,)
+        )
+        if episode.domains:
+            for domain in episode.domains:
+                self._execute(
+                    "INSERT INTO episode_domains (episode_id, domain) VALUES (%s, %s)"
+                    " ON CONFLICT DO NOTHING",
+                    (episode.id, domain),
+                )
         return episode
 
     def get_episode(self, episode_id: str) -> Optional[Episode]:
@@ -707,6 +768,147 @@ class PostgresDatabase:
             (episode_ids,),
         )
 
+    def list_episodes_by_domain(
+        self,
+        domain: str,
+        consolidated: Optional[int] = None,
+        limit: int = 100,
+    ) -> list[Episode]:
+        """Retrieve episodes tagged with a specific domain (cross-project)."""
+        clauses = ["ed.domain = %s"]
+        params: list[Any] = [domain]
+        if consolidated is not None:
+            clauses.append("e.consolidated = %s")
+            params.append(consolidated)
+        where = " AND ".join(clauses)
+        params.append(limit)
+        rows = self._query(
+            f"""SELECT e.* FROM episodes e
+                JOIN episode_domains ed ON e.id = ed.episode_id
+                WHERE {where}
+                ORDER BY e.timestamp DESC LIMIT %s""",
+            tuple(params),
+        )
+        return [self._row_to_episode(r) for r in rows]
+
+    def count_episodes_by_domain(self, domain: str, consolidated: Optional[int] = None) -> int:
+        """Count episodes in a domain."""
+        if consolidated is not None:
+            row = self._query_one(
+                """SELECT COUNT(*) as cnt FROM episode_domains ed
+                   JOIN episodes e ON e.id = ed.episode_id
+                   WHERE ed.domain = %s AND e.consolidated = %s""",
+                (domain, consolidated),
+            )
+        else:
+            row = self._query_one(
+                "SELECT COUNT(*) as cnt FROM episode_domains WHERE domain = %s", (domain,)
+            )
+        return row["cnt"] if row else 0
+
+    def list_active_domains(self, min_episodes: int = 3) -> list[tuple[str, int]]:
+        """List domains with at least min_episodes episodes, sorted by count."""
+        rows = self._query(
+            """SELECT domain, COUNT(*) as cnt FROM episode_domains
+               GROUP BY domain HAVING COUNT(*) >= %s
+               ORDER BY cnt DESC""",
+            (min_episodes,),
+        )
+        return [(r["domain"], r["cnt"]) for r in rows]
+
+    # --- Cognitive Replays ---
+
+    def save_replay(self, replay: CognitiveReplay) -> CognitiveReplay:
+        """Persist a cognitive replay skeleton."""
+        self._execute(
+            """INSERT INTO cognitive_replays
+               (id, session_id, strategy_type, problem_signature, steps,
+                shortcut, domains, files_involved, source_episode_ids,
+                created_at, times_surfaced, times_helpful, confidence)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+               ON CONFLICT (id) DO UPDATE SET
+                steps = EXCLUDED.steps,
+                shortcut = EXCLUDED.shortcut,
+                times_surfaced = EXCLUDED.times_surfaced,
+                times_helpful = EXCLUDED.times_helpful,
+                confidence = EXCLUDED.confidence""",
+            (
+                replay.id,
+                replay.session_id,
+                replay.strategy_type,
+                replay.problem_signature,
+                self._to_json([s.to_dict() for s in replay.steps]),
+                replay.shortcut,
+                self._to_json(replay.domains),
+                self._to_json(replay.files_involved),
+                self._to_json(replay.source_episode_ids),
+                replay.created_at,
+                replay.times_surfaced,
+                replay.times_helpful,
+                replay.confidence,
+            ),
+        )
+        return replay
+
+    def get_replay(self, replay_id: str) -> Optional[CognitiveReplay]:
+        """Retrieve a replay by ID."""
+        row = self._query_one(
+            "SELECT * FROM cognitive_replays WHERE id = %s", (replay_id,)
+        )
+        if not row:
+            return None
+        return self._row_to_replay(row)
+
+    def list_replays(self, limit: int = 50) -> list[CognitiveReplay]:
+        """List replays ordered by confidence (highest first)."""
+        rows = self._query(
+            "SELECT * FROM cognitive_replays ORDER BY confidence DESC, created_at DESC LIMIT %s",
+            (limit,),
+        )
+        return [self._row_to_replay(r) for r in rows]
+
+    def increment_replay_surfaced(self, replay_id: str) -> None:
+        """Increment times_surfaced counter."""
+        self._execute(
+            "UPDATE cognitive_replays SET times_surfaced = times_surfaced + 1 WHERE id = %s",
+            (replay_id,),
+        )
+
+    def mark_replay_helpful(self, replay_id: str) -> None:
+        """Mark a replay as helpful (boosts confidence)."""
+        self._execute(
+            """UPDATE cognitive_replays
+               SET times_helpful = times_helpful + 1,
+                   confidence = LEAST(1.0, confidence + 0.1)
+               WHERE id = %s""",
+            (replay_id,),
+        )
+
+    def count_replays(self) -> int:
+        """Count total replays."""
+        row = self._query_one("SELECT COUNT(*) as cnt FROM cognitive_replays")
+        return row["cnt"] if row else 0
+
+    def _row_to_replay(self, row: dict[str, Any]) -> CognitiveReplay:
+        from neurosync.replay import CognitiveReplay, ReplayStep
+
+        steps_raw = self._from_json(row["steps"], [])
+        return CognitiveReplay(
+            id=row["id"],
+            session_id=row["session_id"],
+            strategy_type=row["strategy_type"],
+            problem_signature=row["problem_signature"],
+            steps=[ReplayStep.from_dict(s) for s in steps_raw],
+            shortcut=row["shortcut"] or "",
+            domains=self._from_json(row["domains"], []),
+            files_involved=self._from_json(row["files_involved"], []),
+            source_episode_ids=self._from_json(row["source_episode_ids"], []),
+            created_at=row["created_at"],
+            times_surfaced=row["times_surfaced"],
+            times_helpful=row["times_helpful"],
+            confidence=row["confidence"],
+        )
+
     def _row_to_episode(self, row: dict[str, Any]) -> Episode:
         return Episode(
             id=row["id"],
@@ -728,6 +930,7 @@ class PostgresDatabase:
             reinforcement_count=row["reinforcement_count"] or 0,
             last_accessed=row["last_accessed"],
             structural_fingerprint=row["structural_fingerprint"] or "",
+            domains=self._from_json(row.get("domains"), []),
         )
 
     # --- Signals ---

@@ -6,7 +6,10 @@ import json
 import re
 import sqlite3
 import threading
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
+
+if TYPE_CHECKING:
+    from neurosync.replay import CognitiveReplay
 
 from neurosync.config import NeuroSyncConfig
 from neurosync.logging import get_logger
@@ -24,7 +27,7 @@ from neurosync.models import (
 
 logger = get_logger("db")
 
-CURRENT_SCHEMA_VERSION = 8
+CURRENT_SCHEMA_VERSION = 10
 
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -61,7 +64,8 @@ CREATE TABLE IF NOT EXISTS episodes (
     metadata TEXT DEFAULT '{}',
     reinforcement_count INTEGER DEFAULT 0,
     last_accessed TEXT,
-    structural_fingerprint TEXT DEFAULT ''
+    structural_fingerprint TEXT DEFAULT '',
+    domains TEXT DEFAULT '[]'
 );
 CREATE INDEX IF NOT EXISTS idx_episodes_session ON episodes(session_id);
 CREATE INDEX IF NOT EXISTS idx_episodes_consolidated ON episodes(consolidated);
@@ -261,6 +265,33 @@ CREATE TABLE IF NOT EXISTS developer_profile (
     metadata TEXT DEFAULT '{}'
 );
 CREATE INDEX IF NOT EXISTS idx_devprofile_key ON developer_profile(profile_key);
+
+CREATE TABLE IF NOT EXISTS episode_domains (
+    episode_id TEXT NOT NULL REFERENCES episodes(id),
+    domain TEXT NOT NULL,
+    PRIMARY KEY (episode_id, domain)
+);
+CREATE INDEX IF NOT EXISTS idx_episode_domains_domain ON episode_domains(domain);
+
+-- v10: Cognitive replays (reasoning path skeletons)
+CREATE TABLE IF NOT EXISTS cognitive_replays (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    strategy_type TEXT NOT NULL DEFAULT 'elimination',
+    problem_signature TEXT NOT NULL DEFAULT '',
+    steps TEXT NOT NULL DEFAULT '[]',
+    shortcut TEXT DEFAULT '',
+    domains TEXT DEFAULT '[]',
+    files_involved TEXT DEFAULT '[]',
+    source_episode_ids TEXT DEFAULT '[]',
+    created_at TEXT NOT NULL,
+    times_surfaced INTEGER DEFAULT 0,
+    times_helpful INTEGER DEFAULT 0,
+    confidence REAL DEFAULT 0.5
+);
+CREATE INDEX IF NOT EXISTS idx_replays_session ON cognitive_replays(session_id);
+CREATE INDEX IF NOT EXISTS idx_replays_strategy ON cognitive_replays(strategy_type);
+CREATE INDEX IF NOT EXISTS idx_replays_confidence ON cognitive_replays(confidence);
 """
 
 
@@ -531,6 +562,66 @@ _V7_TO_V8_INDEXES = [
     ),
 ]
 
+# --- Schema v8 → v9: Add domains column to episodes ---
+_V8_TO_V9_COLUMNS = [
+    ("episodes", "domains", "TEXT DEFAULT '[]'"),
+]
+
+_V8_TO_V9_TABLES = [
+    (
+        """CREATE TABLE IF NOT EXISTS episode_domains (
+            episode_id TEXT NOT NULL REFERENCES episodes(id),
+            domain TEXT NOT NULL,
+            PRIMARY KEY (episode_id, domain)
+        )""",
+        "episode_domains",
+    ),
+]
+
+_V8_TO_V9_INDEXES = [
+    (
+        "CREATE INDEX IF NOT EXISTS idx_episode_domains_domain ON episode_domains(domain)",
+        "idx_episode_domains_domain",
+    ),
+]
+
+# --- Schema v9 → v10: Cognitive replays table ---
+_V9_TO_V10_TABLES = [
+    (
+        """CREATE TABLE IF NOT EXISTS cognitive_replays (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            strategy_type TEXT NOT NULL DEFAULT 'elimination',
+            problem_signature TEXT NOT NULL DEFAULT '',
+            steps TEXT NOT NULL DEFAULT '[]',
+            shortcut TEXT DEFAULT '',
+            domains TEXT DEFAULT '[]',
+            files_involved TEXT DEFAULT '[]',
+            source_episode_ids TEXT DEFAULT '[]',
+            created_at TEXT NOT NULL,
+            times_surfaced INTEGER DEFAULT 0,
+            times_helpful INTEGER DEFAULT 0,
+            confidence REAL DEFAULT 0.5
+        )""",
+        "cognitive_replays",
+    ),
+]
+
+_V9_TO_V10_INDEXES = [
+    (
+        "CREATE INDEX IF NOT EXISTS idx_replays_session ON cognitive_replays(session_id)",
+        "idx_replays_session",
+    ),
+    (
+        "CREATE INDEX IF NOT EXISTS idx_replays_strategy ON cognitive_replays(strategy_type)",
+        "idx_replays_strategy",
+    ),
+    (
+        "CREATE INDEX IF NOT EXISTS idx_replays_confidence ON cognitive_replays(confidence)",
+        "idx_replays_confidence",
+    ),
+]
+
 
 class Database:
     """Thread-safe SQLite database manager for NeuroSync."""
@@ -658,6 +749,23 @@ class Database:
                 if not self._table_exists(conn, table_name):
                     conn.execute(create_stmt)
             for create_stmt, index_name in _V7_TO_V8_INDEXES:
+                if not self._index_exists(conn, index_name):
+                    conn.execute(create_stmt)
+        if from_version < 9:
+            for table, column, col_def in _V8_TO_V9_COLUMNS:
+                if not self._column_exists(conn, table, column):
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_def}")
+            for create_stmt, table_name in _V8_TO_V9_TABLES:
+                if not self._table_exists(conn, table_name):
+                    conn.execute(create_stmt)
+            for create_stmt, index_name in _V8_TO_V9_INDEXES:
+                if not self._index_exists(conn, index_name):
+                    conn.execute(create_stmt)
+        if from_version < 10:
+            for create_stmt, table_name in _V9_TO_V10_TABLES:
+                if not self._table_exists(conn, table_name):
+                    conn.execute(create_stmt)
+            for create_stmt, index_name in _V9_TO_V10_INDEXES:
                 if not self._index_exists(conn, index_name):
                     conn.execute(create_stmt)
         conn.execute("UPDATE schema_version SET version = ?", (CURRENT_SCHEMA_VERSION,))
@@ -825,8 +933,8 @@ class Database:
                    (id, session_id, timestamp, event_type, content, context,
                     files_touched, layers_touched, signal_weight, consolidated,
                     consolidated_at, cause, effect, reasoning, quality_score, metadata,
-                    reinforcement_count, last_accessed, structural_fingerprint)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    reinforcement_count, last_accessed, structural_fingerprint, domains)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     episode.id,
                     episode.session_id,
@@ -847,8 +955,18 @@ class Database:
                     episode.reinforcement_count,
                     episode.last_accessed,
                     episode.structural_fingerprint,
+                    self._to_json(episode.domains),
                 ),
             )
+            # Maintain episode_domains junction table
+            conn.execute(
+                "DELETE FROM episode_domains WHERE episode_id = ?", (episode.id,)
+            )
+            if episode.domains:
+                conn.executemany(
+                    "INSERT OR IGNORE INTO episode_domains (episode_id, domain) VALUES (?, ?)",
+                    [(episode.id, d) for d in episode.domains],
+                )
             conn.commit()
         return episode
 
@@ -916,7 +1034,158 @@ class Database:
             )
             conn.commit()
 
+    def list_episodes_by_domain(
+        self,
+        domain: str,
+        consolidated: Optional[int] = None,
+        limit: int = 100,
+    ) -> list[Episode]:
+        """Retrieve episodes tagged with a specific domain (cross-project)."""
+        conn = self._get_conn()
+        clauses = ["ed.domain = ?"]
+        params: list[Any] = [domain]
+        if consolidated is not None:
+            clauses.append("e.consolidated = ?")
+            params.append(consolidated)
+        where = " AND ".join(clauses)
+        params.append(limit)
+        rows = conn.execute(
+            f"""SELECT e.* FROM episodes e
+                JOIN episode_domains ed ON e.id = ed.episode_id
+                WHERE {where}
+                ORDER BY e.timestamp DESC LIMIT ?""",
+            params,
+        ).fetchall()
+        return [self._row_to_episode(r) for r in rows]
+
+    def count_episodes_by_domain(self, domain: str, consolidated: Optional[int] = None) -> int:
+        """Count episodes in a domain."""
+        conn = self._get_conn()
+        if consolidated is not None:
+            row = conn.execute(
+                """SELECT COUNT(*) FROM episode_domains ed
+                   JOIN episodes e ON e.id = ed.episode_id
+                   WHERE ed.domain = ? AND e.consolidated = ?""",
+                (domain, consolidated),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM episode_domains WHERE domain = ?", (domain,)
+            ).fetchone()
+        return row[0] if row else 0
+
+    def list_active_domains(self, min_episodes: int = 3) -> list[tuple[str, int]]:
+        """List domains with at least min_episodes episodes, sorted by count."""
+        conn = self._get_conn()
+        rows = conn.execute(
+            """SELECT domain, COUNT(*) as cnt FROM episode_domains
+               GROUP BY domain HAVING cnt >= ?
+               ORDER BY cnt DESC""",
+            (min_episodes,),
+        ).fetchall()
+        return [(r["domain"], r["cnt"]) for r in rows]
+
+    # --- Cognitive Replays ---
+
+    def save_replay(self, replay: CognitiveReplay) -> CognitiveReplay:
+        """Persist a cognitive replay skeleton."""
+        with self._lock:
+            conn = self._get_conn()
+            conn.execute(
+                """INSERT OR REPLACE INTO cognitive_replays
+                   (id, session_id, strategy_type, problem_signature, steps,
+                    shortcut, domains, files_involved, source_episode_ids,
+                    created_at, times_surfaced, times_helpful, confidence)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    replay.id,
+                    replay.session_id,
+                    replay.strategy_type,
+                    replay.problem_signature,
+                    self._to_json([s.to_dict() for s in replay.steps]),
+                    replay.shortcut,
+                    self._to_json(replay.domains),
+                    self._to_json(replay.files_involved),
+                    self._to_json(replay.source_episode_ids),
+                    replay.created_at,
+                    replay.times_surfaced,
+                    replay.times_helpful,
+                    replay.confidence,
+                ),
+            )
+            conn.commit()
+        return replay
+
+    def get_replay(self, replay_id: str) -> Optional[CognitiveReplay]:
+        """Retrieve a replay by ID."""
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT * FROM cognitive_replays WHERE id = ?", (replay_id,)
+        ).fetchone()
+        if not row:
+            return None
+        return self._row_to_replay(row)
+
+    def list_replays(self, limit: int = 50) -> list[CognitiveReplay]:
+        """List replays ordered by confidence (highest first)."""
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT * FROM cognitive_replays ORDER BY confidence DESC, created_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [self._row_to_replay(r) for r in rows]
+
+    def increment_replay_surfaced(self, replay_id: str) -> None:
+        """Increment times_surfaced counter."""
+        with self._lock:
+            conn = self._get_conn()
+            conn.execute(
+                "UPDATE cognitive_replays SET times_surfaced = times_surfaced + 1 WHERE id = ?",
+                (replay_id,),
+            )
+            conn.commit()
+
+    def mark_replay_helpful(self, replay_id: str) -> None:
+        """Mark a replay as helpful (boosts confidence)."""
+        with self._lock:
+            conn = self._get_conn()
+            conn.execute(
+                """UPDATE cognitive_replays
+                   SET times_helpful = times_helpful + 1,
+                       confidence = MIN(1.0, confidence + 0.1)
+                   WHERE id = ?""",
+                (replay_id,),
+            )
+            conn.commit()
+
+    def count_replays(self) -> int:
+        """Count total replays."""
+        conn = self._get_conn()
+        row = conn.execute("SELECT COUNT(*) FROM cognitive_replays").fetchone()
+        return row[0] if row else 0
+
+    def _row_to_replay(self, row: sqlite3.Row) -> CognitiveReplay:
+        from neurosync.replay import CognitiveReplay, ReplayStep
+
+        steps_raw = self._from_json(row["steps"], [])
+        return CognitiveReplay(
+            id=row["id"],
+            session_id=row["session_id"],
+            strategy_type=row["strategy_type"],
+            problem_signature=row["problem_signature"],
+            steps=[ReplayStep.from_dict(s) for s in steps_raw],
+            shortcut=row["shortcut"] or "",
+            domains=self._from_json(row["domains"], []),
+            files_involved=self._from_json(row["files_involved"], []),
+            source_episode_ids=self._from_json(row["source_episode_ids"], []),
+            created_at=row["created_at"],
+            times_surfaced=row["times_surfaced"],
+            times_helpful=row["times_helpful"],
+            confidence=row["confidence"],
+        )
+
     def _row_to_episode(self, row: sqlite3.Row) -> Episode:
+        keys = row.keys() if hasattr(row, "keys") else []
         return Episode(
             id=row["id"],
             session_id=row["session_id"],
@@ -937,6 +1206,7 @@ class Database:
             reinforcement_count=row["reinforcement_count"] or 0,
             last_accessed=row["last_accessed"],
             structural_fingerprint=row["structural_fingerprint"] or "",
+            domains=self._from_json(row["domains"], []) if "domains" in keys else [],
         )
 
     # --- Signals ---

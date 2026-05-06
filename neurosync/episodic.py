@@ -6,6 +6,7 @@ from typing import Any, Optional
 
 from neurosync.analogy import AnalogyEngine
 from neurosync.db import Database
+from neurosync.intelligence.domains import classify_episode as classify_domains
 from neurosync.models import Episode, Session, Signal, _utcnow
 from neurosync.quality import score_episode_quality
 from neurosync.signals import compute_episode_signals
@@ -104,6 +105,19 @@ class EpisodicMemory:
         )
         # Compute quality score
         episode.quality_score = score_episode_quality(content)
+        # Auto-classify conceptual domains (cross-project transfer axis)
+        try:
+            episode.domains = classify_domains(
+                content=content,
+                context=context,
+                files_touched=files_touched,
+                event_type=event_type,
+                cause=cause,
+                effect=effect,
+                reasoning=reasoning,
+            )
+        except Exception:
+            episode.domains = []
         # Auto-compute structural fingerprint
         fp = self._analogy.fingerprint(content)
         if fp.patterns:

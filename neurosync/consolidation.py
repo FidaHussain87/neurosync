@@ -479,27 +479,48 @@ class ConsolidationEngine:
         return None
 
     def _classify_scope(self, cluster: list[Episode]) -> str:
-        """Determine scope: project (single project), domain (shared domain), craft (general)."""
+        """Determine scope using domain-first logic.
+
+        - If episodes share a domain AND span multiple projects → "domain"
+          (conceptual transfer: the insight applies across projects)
+        - If all episodes are from one project → "project"
+        - Otherwise → "craft" (general practice)
+        """
         projects: set[str] = set()
+        domains: set[str] = set()
         for ep in cluster:
             session = self._db.get_session(ep.session_id)
             if session and session.project:
                 projects.add(session.project)
+            if ep.domains:
+                domains.update(ep.domains)
+        # Multi-project cluster with shared domain = domain-scoped theory
+        if len(projects) > 1 and domains:
+            return "domain"
         if len(projects) == 1:
             return "project"
-        if len(projects) > 1:
+        # No project info but has domain classification
+        if domains:
             return "domain"
         return "craft"
 
     def _scope_qualifier(self, cluster: list[Episode]) -> str:
-        """Get the scope qualifier (e.g., project name)."""
+        """Get the scope qualifier — domain name for domain-scoped, project name for project-scoped."""
         projects: set[str] = set()
+        domain_counts: Counter[str] = Counter()
         for ep in cluster:
             session = self._db.get_session(ep.session_id)
             if session and session.project:
                 projects.add(session.project)
+            for d in ep.domains:
+                domain_counts[d] += 1
+        # Prefer domain as qualifier when multi-project
+        if len(projects) > 1 and domain_counts:
+            return domain_counts.most_common(1)[0][0]
         if len(projects) == 1:
             return projects.pop()
+        if domain_counts:
+            return domain_counts.most_common(1)[0][0]
         return ""
 
     def _link_new_theory(self, theory_id: str) -> None:

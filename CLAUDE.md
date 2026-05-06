@@ -2,7 +2,7 @@
 
 ## What This Is
 
-NeuroSync is a developer-focused memory MCP server (v0.6.0). It provides episodic, semantic, and working memory — plus cognitive features (hierarchy, forgetting, analogy, causal reasoning, failure modeling, user familiarity tracking) and a background intelligence layer (pattern mining, fatigue detection, file dependency analysis) — for AI coding agents via 10 MCP tools. Supports SQLite (default) and PostgreSQL backends.
+NeuroSync is a developer-focused memory MCP server (v0.7.0). It provides episodic, semantic, and working memory — plus cognitive features (hierarchy, forgetting, analogy, causal reasoning, failure modeling, user familiarity tracking), a background intelligence layer (pattern mining, fatigue detection, file dependency analysis), domain-based cross-project knowledge transfer (32-domain taxonomy), and a cognitive replay engine (reasoning path capture and surfacing) — for AI coding agents via 10 MCP tools. Supports SQLite (default) and PostgreSQL backends.
 
 ## NeuroSync Memory Protocol
 
@@ -39,10 +39,12 @@ Call `neurosync_record` with structured episodes when the session ends. Write ca
 
 - **Auto-consolidation** — theories are extracted automatically when enough episodes accumulate (no manual `consolidate` needed). Uses TF-IDF keyword extraction and multi-episode merge heuristics (zero LLM tokens). Runs in a non-blocking background thread.
 - **Intelligence layer** — background analyzers mine stored data for patterns (peak hours, fatigue, file co-occurrence, volatility). Insights surface automatically in recall/record responses.
+- **Domain classification** — every episode is auto-tagged with conceptual domains (from 32-domain taxonomy across 7 families). Enables cross-project knowledge transfer: "concurrency" is concurrency whether in Python, Go, or Perl. Domain-scoped theories are created when episodes span multiple projects but share a domain.
+- **Cognitive replay** — when sessions contain debugging chains (frustration→dead ends→resolution), reasoning path skeletons are captured automatically. On future recall, if a similar problem is detected, surfaced as "skip X, go directly to Y" advice.
 - **Theory versioning** — every mutation (confirm, contradict, retire) saves a snapshot; rollback to any previous version via `neurosync_theories action=rollback`.
 - **Forgetting pass** — after consolidation, Ebbinghaus retention curves prune low-value episodes and decay stale theories
 - **User familiarity tracking** — topics you know well are suppressed from recall; corrections reduce familiarity
-- **Cross-project theory discovery** — recall finds relevant domain/craft theories from other projects
+- **Cross-project theory discovery** — recall finds relevant domain/craft theories from other projects (powered by domain taxonomy)
 - **7 active signal types** — CORRECTION (2^N), DEPTH (layer count), SURPRISE (contradicts theory), REPETITION (re-explained), EXPLICIT (x10), INTUITION (1-5), PASSIVE (x0.3). DURATION is defined but not yet wired (requires session-level timing).
 - **Outcome-based confidence** — session correction count adjusts recalled theory confidence
 - **Passive git observation** — file changes and commits are recorded as low-weight episodes automatically
@@ -56,8 +58,8 @@ Call `neurosync_record` with structured episodes when the session ends. Write ca
   - `cli.py` — CLI commands: serve, consolidate, status, export, import, reindex, downgrade, import-starter-pack, generate-protocol, install-hook, graph-sync, graph-status, reset
   - `config.py` — Configuration (env > config.json > defaults) with validation
   - `models.py` — Dataclasses (Session, Episode, Signal, Theory, Contradiction, UserKnowledge)
-  - `db.py` — SQLite database (WAL mode, thread-safe, schema v8, migrations + downgrade) — default backend
-  - `pg_db.py` — PostgreSQL database (connection pooling, JSONB, schema v8) — optional backend
+  - `db.py` — SQLite database (WAL mode, thread-safe, schema v10, migrations + downgrade) — default backend
+  - `pg_db.py` — PostgreSQL database (connection pooling, JSONB, schema v10) — optional backend
   - `vectorstore.py` — ChromaDB wrapper (auto-recovery, reindex, integrity check)
   - `episodic.py` — Layer 1: session/episode CRUD, causal episodes, continuations
   - `semantic.py` — Layer 2: theory CRUD, confidence, linking, versioning, rollback
@@ -78,14 +80,16 @@ Call `neurosync_record` with structured episodes when the session ends. Write ca
   - `hierarchy.py` — Theory hierarchy traversal, semantic parents, merging
   - `causal.py` — Causal graph construction and querying
   - `graph.py` — Optional Neo4j knowledge graph sync and querying
+  - `replay.py` — Cognitive Replay Engine: reasoning path capture, detection, matching, surfacing
   - `intelligence/` — Background intelligence layer (zero LLM cost)
     - `__init__.py` — IntelligenceEngine orchestrator (daemon thread, scheduled analyzers)
     - `models.py` — Insight + DeveloperProfile dataclasses
     - `surfacer.py` — Relevance scoring and insight selection for MCP responses
+    - `domains.py` — Domain classifier: 32-domain taxonomy, keyword fingerprinting, file-path heuristics
     - `analyzers/base.py` — BaseAnalyzer ABC (interval_seconds, max_runtime_ms)
     - `analyzers/work_patterns.py` — Peak hours, session rhythm, fatigue, day-of-week patterns
     - `analyzers/file_network.py` — File co-occurrence (Jaccard), volatility hotspots
-- `tests/` — pytest test suite (~474 tests)
+- `tests/` — pytest test suite (~539 tests)
 - `frontend/` — Interactive 3D graph visualization (React 18 + TypeScript)
   - `src/components/` — GraphCanvas (3D), Sidebar, DetailPanel, QueryRunner, ConnectionForm
   - `src/hooks/` — useNeo4jConnection, useGraphData
@@ -129,13 +133,14 @@ cd frontend && npm run build                # production build to frontend/dist/
 
 ## Architecture
 
-Four-layer memory system:
-1. **Episodic** (Layer 1) — Raw session events stored in SQLite/PostgreSQL + ChromaDB
-2. **Semantic** (Layer 2) — Consolidated theories with confidence scores and version history
-3. **Working** (Layer 3) — Context-aware recall via RetrievalPipeline with user familiarity filtering
+Five-layer memory system:
+1. **Episodic** (Layer 1) — Raw session events stored in SQLite/PostgreSQL + ChromaDB, auto-tagged with conceptual domains
+2. **Semantic** (Layer 2) — Consolidated theories with confidence scores, version history, and domain-scoped cross-project knowledge
+3. **Working** (Layer 3) — Context-aware recall via RetrievalPipeline with user familiarity filtering + cognitive replay surfacing
 4. **Intelligence** (Layer 4) — Background pattern mining produces insights and developer profile
+5. **Replay** (Layer 5) — Reasoning path capture: hypothesis→test→eliminate→realize chains stored as ~300-byte skeletons
 
-Data flows: record -> episodes -> auto-consolidation (background) -> theories -> forgetting pass -> recall (+ intelligence insights) -> graph-sync -> Neo4j -> frontend visualization
+Data flows: record -> episodes (+ domain classification + replay detection) -> auto-consolidation (background) -> theories -> forgetting pass -> recall (+ intelligence insights + cognitive replays) -> graph-sync -> Neo4j -> frontend visualization
 
 ### Database Backends
 

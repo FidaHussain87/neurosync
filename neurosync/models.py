@@ -110,6 +110,8 @@ class Episode:
     reinforcement_count: int = 0
     last_accessed: Optional[str] = None
     structural_fingerprint: str = ""
+    # v9: conceptual domains (cross-project transfer axis)
+    domains: list[str] = field(default_factory=list)
 
 
 @dataclass

@@ -109,6 +109,10 @@ class VectorStore:
             metadata["quality_score"] = episode.quality_score
         if episode.structural_fingerprint:
             metadata["structural_fingerprint"] = episode.structural_fingerprint
+        if episode.domains:
+            # ChromaDB metadata values must be str/int/float/bool
+            metadata["domains"] = ",".join(episode.domains)
+            metadata["domain_count"] = len(episode.domains)
         self._episodes.upsert(
             ids=[episode.id],
             documents=[self._safe_document(episode.content)],
