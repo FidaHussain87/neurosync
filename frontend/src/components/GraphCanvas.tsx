@@ -1,7 +1,8 @@
-import { useRef, useCallback, useEffect, useState } from 'react';
+import { useRef, useCallback, useEffect, useState, forwardRef, useImperativeHandle } from 'react';
 import ForceGraph3D, { type ForceGraphMethods } from 'react-force-graph-3d';
 import * as THREE from 'three';
 import type { GraphData, GraphNode, GraphLink, NodeType } from '../types';
+import type { GraphCanvasHandle } from '../gestures/types';
 import { NODE_STYLES, LINK_STYLES, DEFAULT_LINK_STYLE, NODE_TIER, type VisualTier } from '../constants';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -227,8 +228,8 @@ function rgbaToHexAlpha(rgba: string): { hex: string; alpha: number } {
 }
 
 // ── Zoom constants ──
-const ZOOM_MIN_DIST = 30;
-const ZOOM_MAX_DIST = 5000;
+const ZOOM_MIN_DIST = 10;
+const ZOOM_MAX_DIST = 8000;
 
 // Log-scale mapping: slider position (0–1) ↔ camera distance
 // Top of slider = zoomed in (min dist), bottom = zoomed out (max dist)
@@ -247,7 +248,7 @@ function sliderPctToDist(pct: number): number {
 
 // ── Component ──────────────────────────────────────────────
 
-export default function GraphCanvas({ graphData, selectedNode, onNodeClick, onBackgroundClick, viewResetCount }: Props) {
+const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas({ graphData, selectedNode, onNodeClick, onBackgroundClick, viewResetCount }, ref) {
   const fgRef = useRef<FGMethods | undefined>(undefined);
   const containerRef = useRef<HTMLDivElement>(null);
   const [dimensions, setDimensions] = useState({ width: 800, height: 600 });
@@ -316,8 +317,10 @@ export default function GraphCanvas({ graphData, selectedNode, onNodeClick, onBa
       try { controls = fg.controls(); } catch { /* */ }
       if (controls && typeof controls.addEventListener === 'function') {
         controlsAttached.current = true;
-        if ('zoomSpeed' in controls) controls.zoomSpeed = 3;
+        if ('zoomSpeed' in controls) controls.zoomSpeed = 6;
         if ('rotateSpeed' in controls) controls.rotateSpeed = 1.5;
+        if ('minDistance' in controls) controls.minDistance = 10;
+        if ('maxDistance' in controls) controls.maxDistance = 8000;
         controls.addEventListener('change', () => {
           let cam: THREE.Camera | undefined;
           try { cam = fg.camera() as THREE.Camera; } catch { return; }
@@ -753,6 +756,53 @@ export default function GraphCanvas({ graphData, selectedNode, onNodeClick, onBa
     setZoomDist(clamped);
   }, []);
 
+  // ── Imperative handle for gesture/eye-tracking system ──
+  useImperativeHandle(ref, () => ({
+    getCamera: () => {
+      try { return fgRef.current?.camera() as THREE.Camera ?? null; } catch { return null; }
+    },
+    getScene: () => {
+      try { return fgRef.current?.scene() as THREE.Scene ?? null; } catch { return null; }
+    },
+    getControls: () => {
+      try { return fgRef.current?.controls() ?? null; } catch { return null; }
+    },
+    getCameraDistance: () => cameraDistRef.current,
+    zoom: handleZoom,
+    clickNode: (nodeOrId: any) => {
+      const node = typeof nodeOrId === 'string'
+        ? graphData.nodes.find(n => n.id === nodeOrId)
+        : nodeOrId;
+      if (node) onNodeClick(node);
+    },
+    resetView: () => {
+      const fg = fgRef.current;
+      if (!fg) return;
+      const count = graphData.nodes.length;
+      const fitDist = Math.max(300, Math.min(800, 200 + count * 1.2));
+      const elevationRad = (36 * Math.PI) / 180;
+      const y = fitDist * Math.sin(elevationRad);
+      const xz = fitDist * Math.cos(elevationRad);
+      fg.cameraPosition({ x: xz, y, z: xz }, { x: 0, y: 0, z: 0 }, 600);
+      cameraDistRef.current = fitDist;
+      setZoomDist(fitDist);
+    },
+    setControlsEnabled: (enabled: boolean) => {
+      try {
+        const controls = fgRef.current?.controls() as any;
+        if (controls) controls.enabled = enabled;
+      } catch { /* controls not ready */ }
+    },
+    getContainerBounds: () => containerRef.current?.getBoundingClientRect() ?? null,
+    getNodePositions: () =>
+      (graphData.nodes as any[]).map((n: any) => ({
+        id: n.id,
+        x: n.x ?? 0,
+        y: n.y ?? 0,
+        z: n.z ?? 0,
+      })),
+  }), [graphData.nodes, onNodeClick, handleZoom]);
+
   return (
     <div ref={containerRef} className="flex-1 relative overflow-hidden">
       <ForceGraph3D
@@ -861,4 +911,6 @@ export default function GraphCanvas({ graphData, selectedNode, onNodeClick, onBa
       )}
     </div>
   );
-}
+});
+
+export default GraphCanvas;

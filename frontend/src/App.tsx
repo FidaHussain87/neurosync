@@ -1,15 +1,23 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import type { GraphNode } from './types';
+import type { GraphCanvasHandle } from './gestures/types';
 import { useNeo4jConnection } from './hooks/useNeo4jConnection';
 import { useGraphData } from './hooks/useGraphData';
 import Sidebar from './components/Sidebar';
 import GraphCanvas from './components/GraphCanvas';
 import DetailPanel from './components/DetailPanel';
+import HandControlLayer from './components/HandControlLayer';
 
 export default function App() {
   const connection = useNeo4jConnection();
   const graph = useGraphData();
   const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
+  const graphHandleRef = useRef<GraphCanvasHandle>(null);
+  const [graphHandle, setGraphHandle] = useState<GraphCanvasHandle | null>(null);
+
+  useEffect(() => {
+    setGraphHandle(graphHandleRef.current);
+  });
 
   // Auto-load overview on first connect
   const [initialLoaded, setInitialLoaded] = useState(false);
@@ -67,13 +75,16 @@ export default function App() {
         linkCount={graph.filteredData.links.length}
       />
 
-      <GraphCanvas
-        graphData={graph.filteredData}
-        selectedNode={selectedNode}
-        onNodeClick={handleNodeClick}
-        onBackgroundClick={handleBackgroundClick}
-        viewResetCount={graph.viewResetCount}
-      />
+      <HandControlLayer graphHandle={graphHandle}>
+        <GraphCanvas
+          ref={graphHandleRef}
+          graphData={graph.filteredData}
+          selectedNode={selectedNode}
+          onNodeClick={handleNodeClick}
+          onBackgroundClick={handleBackgroundClick}
+          viewResetCount={graph.viewResetCount}
+        />
+      </HandControlLayer>
 
       {selectedNode && (
         <div className="absolute top-0 right-0 h-full z-20">
