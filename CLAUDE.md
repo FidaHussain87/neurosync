@@ -2,7 +2,7 @@
 
 ## What This Is
 
-NeuroSync is a developer-focused memory MCP server (v0.7.0). It provides episodic, semantic, and working memory — plus cognitive features (hierarchy, forgetting, analogy, causal reasoning, failure modeling, user familiarity tracking), a background intelligence layer (pattern mining, fatigue detection, file dependency analysis), domain-based cross-project knowledge transfer (32-domain taxonomy), and a cognitive replay engine (reasoning path capture and surfacing) — for AI coding agents via 10 MCP tools. Supports SQLite (default) and PostgreSQL backends.
+NeuroSync is a developer-focused memory MCP server (v0.7.0). It provides episodic, semantic, and working memory — plus cognitive features (hierarchy, forgetting, analogy, causal reasoning, failure modeling, user familiarity tracking), a background intelligence layer (pattern mining, fatigue detection, file dependency analysis), domain-based cross-project knowledge transfer (32-domain taxonomy), a cognitive replay engine (reasoning path capture and surfacing), topological knowledge health (persistent homology), and a reflexive calibration network (Bayesian accuracy tracking with metacognitive triggers) — for AI coding agents via 10 MCP tools. Supports SQLite (default) and PostgreSQL backends.
 
 ## NeuroSync Memory Protocol
 
@@ -44,6 +44,7 @@ Call `neurosync_record` with structured episodes when the session ends. Write ca
 - **Cognitive Lensing Protocol (CLP)** — transforms verbose theories/corrections/failures into minimal-token imperative "lenses" (e.g., `NEVER throw. Return Result<T,E>.`). Achieves 15-25x token efficiency via: Epistemic Delta Encoding (only surfaces what LLM doesn't already know), Imperative Compression (declarative→imperative), Information Density Maximization (knapsack optimization: max behavioral impact per token). Scales sublinearly: more knowledge = better compression = fewer tokens.
 - **Predictive Pre-emption** — infers developer trajectory from git branch names, file co-occurrence patterns, and domain context. Pre-selects relevant lenses and warnings BEFORE mistakes happen.
 - **Topological Knowledge Health (TKH)** — applies persistent homology from algebraic topology to the knowledge graph. Computes Betti numbers (β₀ = connected components, β₁ = knowledge voids), finds articulation points (fragile bridges), measures crystallization (structural maturity), and domain coverage. Health score (0-100) exposed via `neurosync_status`. Zero external TDA dependencies — implements Union-Find and boundary matrix reduction natively.
+- **Reflexive Calibration Network (RCN)** — teaches the LLM its own accuracy curves. Bayesian per-domain accuracy tracking, isotonic regression (PAVA) maps claimed confidence to actual accuracy, hazard rate functions detect real-time failure risk (session fatigue, correction rate), failure precursor detection identifies domain pairs that predict errors, metacognitive triggers injected into recall responses when doubt level is elevated. Zero external dependencies.
 - **Theory versioning** — every mutation (confirm, contradict, retire) saves a snapshot; rollback to any previous version via `neurosync_theories action=rollback`.
 - **Forgetting pass** — after consolidation, Ebbinghaus retention curves prune low-value episodes and decay stale theories
 - **User familiarity tracking** — topics you know well are suppressed from recall; corrections reduce familiarity
@@ -87,6 +88,7 @@ Call `neurosync_record` with structured episodes when the session ends. Write ca
   - `lensing.py` — Cognitive Lensing Protocol: epistemic delta encoding, imperative compression, knapsack optimization
   - `preemption.py` — Predictive Pre-emption: trajectory inference, file prediction, mistake forecasting
   - `topology.py` — Topological Knowledge Health: persistent homology (β₀, β₁), articulation points, crystallization, void detection
+  - `calibration.py` — Reflexive Calibration Network: Bayesian accuracy tracking, isotonic regression, hazard rates, failure precursors, metacognitive injection
   - `intelligence/` — Background intelligence layer (zero LLM cost)
     - `__init__.py` — IntelligenceEngine orchestrator (daemon thread, scheduled analyzers)
     - `models.py` — Insight + DeveloperProfile dataclasses
@@ -95,7 +97,7 @@ Call `neurosync_record` with structured episodes when the session ends. Write ca
     - `analyzers/base.py` — BaseAnalyzer ABC (interval_seconds, max_runtime_ms)
     - `analyzers/work_patterns.py` — Peak hours, session rhythm, fatigue, day-of-week patterns
     - `analyzers/file_network.py` — File co-occurrence (Jaccard), volatility hotspots
-- `tests/` — pytest test suite (~630 tests)
+- `tests/` — pytest test suite (~680 tests)
 - `frontend/` — Interactive 3D graph visualization (React 18 + TypeScript)
   - `src/components/` — GraphCanvas (3D), Sidebar, DetailPanel, QueryRunner, ConnectionForm
   - `src/hooks/` — useNeo4jConnection, useGraphData
@@ -139,7 +141,7 @@ cd frontend && npm run build                # production build to frontend/dist/
 
 ## Architecture
 
-Seven-layer memory system:
+Eight-layer memory system:
 1. **Episodic** (Layer 1) — Raw session events stored in SQLite/PostgreSQL + ChromaDB, auto-tagged with conceptual domains
 2. **Semantic** (Layer 2) — Consolidated theories with confidence scores, version history, and domain-scoped cross-project knowledge
 3. **Working** (Layer 3) — Context-aware recall via RetrievalPipeline with user familiarity filtering + cognitive replay surfacing
@@ -147,6 +149,7 @@ Seven-layer memory system:
 5. **Replay** (Layer 5) — Reasoning path capture: hypothesis→test→eliminate→realize chains stored as ~300-byte skeletons
 6. **Lensing** (Layer 6) — Cognitive Lensing Protocol: compresses all knowledge into minimal-token imperative format, optimized per-token-budget via knapsack. Predictive pre-emption infers trajectory and surfaces lenses before mistakes happen.
 7. **Topology** (Layer 7) — Topological Knowledge Health via persistent homology. Computes Betti numbers (β₀ components, β₁ voids), Euler characteristic, articulation points (fragility), crystallization score, domain coverage. Health report (0-100) diagnoses structural gaps in knowledge.
+8. **Calibration** (Layer 8) — Reflexive Calibration Network: Bayesian accuracy tracking per domain, isotonic regression (PAVA) for confidence calibration, hazard rate functions for real-time failure risk, failure precursor detection (domain pairs that predict errors), metacognitive triggers injected into LLM context.
 
 Data flows: record -> episodes (+ domain classification + replay detection) -> auto-consolidation (background) -> theories -> forgetting pass -> recall -> **CLP compression** (theories + failures + corrections → optimized lens set, ~80 tokens) -> response (+ intelligence insights + replays + trajectory) -> graph-sync -> Neo4j -> frontend visualization
 

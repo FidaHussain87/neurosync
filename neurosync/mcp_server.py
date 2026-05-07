@@ -12,6 +12,7 @@ import traceback
 from typing import Any, Optional
 
 from neurosync.analogy import AnalogyEngine
+from neurosync.calibration import ReflexiveCalibrationEngine
 from neurosync.causal import CausalGraph
 from neurosync.config import NeuroSyncConfig, detect_git_info
 from neurosync.consolidation import maybe_consolidate
@@ -429,6 +430,7 @@ _graph: Optional[Any] = None
 _current_session_id: Optional[str] = None
 _session_started_at: Optional[float] = None
 _correction_count: int = 0
+_assertion_count: int = 0  # Total assertions (records + queries + recalls) this session
 _correction_topics: list[str] = []  # Topics corrected this session (for targeted penalization)
 _git_observer: Optional[GitObserver] = None
 _session_lock = threading.Lock()
@@ -437,6 +439,7 @@ _consolidation_lock = threading.Lock()
 _consolidation_running = False
 _last_consolidation_result: Optional[dict[str, Any]] = None
 _intelligence: Any = None
+_calibration: Optional[ReflexiveCalibrationEngine] = None
 
 
 def _init() -> None:
@@ -515,9 +518,19 @@ def _init() -> None:
     except Exception:
         logger.debug("Intelligence engine init failed", exc_info=True)
 
+    # Reflexive Calibration Network
+    calibration = None
+    try:
+        calibration = ReflexiveCalibrationEngine(db)
+        calibration.initialize()
+        logger.info("Reflexive Calibration Network initialized")
+    except Exception:
+        logger.debug("RCN init failed", exc_info=True)
+
     # Atomic commit — all or nothing
-    global _intelligence
+    global _intelligence, _calibration
     _config = config
+    _calibration = calibration
     _db = db
     _vs = vs
     _episodic = episodic
@@ -559,7 +572,7 @@ def _rotate_session() -> None:
     "call recall at session start" — making it the natural session boundary.
     If no session exists yet (first call), this is a no-op.
     """
-    global _current_session_id, _correction_count, _correction_topics, _git_observer, _session_started_at
+    global _current_session_id, _correction_count, _assertion_count, _correction_topics, _git_observer, _session_started_at
     if _current_session_id is None:
         return
     # Capture git delta and end the old session
@@ -583,6 +596,7 @@ def _rotate_session() -> None:
     _current_session_id = None
     _session_started_at = None
     _correction_count = 0
+    _assertion_count = 0
     _correction_topics = []
     _git_observer = None
     if _intelligence:
@@ -823,12 +837,34 @@ def handle_recall(params: dict[str, Any]) -> dict[str, Any]:
                 }
         except Exception:
             logger.debug("Cognitive lensing failed", exc_info=True)
+    # Reflexive Calibration Network: inject metacognitive warnings
+    if _calibration:
+        try:
+            session_minutes = (time.time() - (_session_started_at or time.time())) / 60.0
+            cal_report = _calibration.calibrate(
+                context_domains=result.get("trajectory", {}).get("predicted_domains", []),
+                session_corrections=_correction_count,
+                session_assertions=_assertion_count,
+                session_duration_minutes=session_minutes,
+            )
+            injection = cal_report.format_injection()
+            if injection:
+                result["calibration"] = {
+                    "doubt_level": cal_report.doubt_level,
+                    "should_verify": cal_report.should_verify,
+                    "mean_accuracy": round(cal_report.mean_accuracy, 3),
+                    "injection": injection,
+                }
+        except Exception:
+            logger.debug("RCN enrichment failed", exc_info=True)
     return _add_protocol_hint("neurosync_recall", result)
 
 
 def handle_record(params: dict[str, Any]) -> dict[str, Any]:
+    global _assertion_count
     _require_init(_episodic)
     events = _validate_array(params.get("events", []), "events", MAX_EVENTS_PER_RECORD)
+    _assertion_count += len(events)
     summary = _validate_string(params.get("session_summary", ""), "session_summary", MAX_CONTENT_CHARS)
     project = params.get("project", "")
     branch = params.get("branch", "")
@@ -1047,7 +1083,9 @@ def _topic_overlap(correction_text: str, theory_text: str) -> bool:
 
 
 def handle_remember(params: dict[str, Any]) -> dict[str, Any]:
+    global _assertion_count
     _require_init(_episodic)
+    _assertion_count += 1
     content = _validate_string(params.get("content", ""), "content", MAX_CONTENT_CHARS)
     event_type = params.get("type", "explicit")
     cause = _validate_string(params.get("cause", ""), "cause", MAX_CONTENT_CHARS)
@@ -1128,7 +1166,7 @@ def handle_query(params: dict[str, Any]) -> dict[str, Any]:
 
 
 def handle_correct(params: dict[str, Any]) -> dict[str, Any]:
-    global _correction_count, _correction_topics
+    global _correction_count, _assertion_count, _correction_topics
     _require_init(_episodic, _semantic, _failure)
     wrong = _validate_string(params.get("wrong", ""), "wrong", MAX_CONTENT_CHARS)
     right = _validate_string(params.get("right", ""), "right", MAX_CONTENT_CHARS)
@@ -1136,6 +1174,7 @@ def handle_correct(params: dict[str, Any]) -> dict[str, Any]:
     if not wrong.strip() or not right.strip():
         return {"error": "Both 'wrong' and 'right' are required"}
     _correction_count += 1
+    _assertion_count += 1
     # Track correction topics for targeted confidence adjustment
     _correction_topics.append(wrong.lower())
     _correction_topics.append(right.lower())
@@ -1171,6 +1210,15 @@ def handle_correct(params: dict[str, Any]) -> dict[str, Any]:
         _user_model.record_correction_on_topic(topic=wrong[:100], project=proj)
         # Record the right thing as exposure (user now knows this)
         _user_model.record_exposure(topic=right[:100], project=proj, explained=True)
+    # Update RCN accuracy model with this correction
+    if _calibration:
+        try:
+            from neurosync.intelligence.domains import classify_episode as _classify_rcn
+
+            domains = _classify_rcn(content=f"{wrong} {right}")
+            _calibration.record_outcome(domains=domains, was_correct=False)
+        except Exception:
+            logger.debug("RCN outcome recording failed", exc_info=True)
     auto_result = _try_auto_consolidate()
     if auto_result:
         result["auto_consolidation"] = auto_result
@@ -1212,6 +1260,13 @@ def handle_status(params: dict[str, Any]) -> dict[str, Any]:
         result["topology"] = health.to_dict()
     except Exception:
         result["topology"] = {"healthy": False}
+    # Reflexive Calibration Network
+    if _calibration:
+        try:
+            cal_report = _calibration.calibrate()
+            result["calibration"] = cal_report.to_dict()
+        except Exception:
+            result["calibration"] = {"healthy": False}
     return result
 
 
