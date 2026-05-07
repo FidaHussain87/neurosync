@@ -63,15 +63,17 @@ class EpisodicMemory:
         contradicts_theory: bool = False,
         times_explained: int = 0,
         correction_count: int = 0,
+        topic_duration_seconds: float = 0.0,
+        session_duration_seconds: float = 0.0,
     ) -> Episode:
         """Record a new episode within a session.
 
-        Computes 7 active signal types via compute_episode_signals:
+        Computes all 8 signal types via compute_episode_signals:
         CORRECTION (correction_count > 0), DEPTH (layers_touched),
         SURPRISE (contradicts_theory), REPETITION (times_explained),
         EXPLICIT (event_type == "explicit"), INTUITION (importance),
-        PASSIVE (saved separately for observed events).
-        DURATION is defined but not yet wired (requires session-level timing).
+        PASSIVE (saved separately for observed events),
+        DURATION (topic_duration_seconds / session_duration_seconds).
         """
         layers = layers_touched or []
         # Compute all applicable signals via the signals module
@@ -83,6 +85,8 @@ class EpisodicMemory:
             times_explained=times_explained,
             is_explicit=(event_type == "explicit"),
             importance=importance,
+            topic_duration=topic_duration_seconds,
+            session_duration=session_duration_seconds,
         )
         # Apply composite signal weight (minimum of base weight or composite)
         if signals:

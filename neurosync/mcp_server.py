@@ -327,6 +327,25 @@ TOOLS = [
         },
     },
     {
+        "name": "neurosync_poll",
+        "description": (
+            "Proactively check for warnings, fatigue signals, and trajectory predictions. "
+            "Call periodically during long sessions or before touching risky areas. "
+            "Returns active warnings, calibration status, and file/domain predictions "
+            "without requiring a full recall."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "context": {
+                    "type": "string",
+                    "description": "Current work context (files, what you're about to do)",
+                },
+                "project": {"type": "string"},
+            },
+        },
+    },
+    {
         "name": "neurosync_graph",
         "description": (
             "Query or sync the Neo4j knowledge graph. Requires neo4j extra: "
@@ -432,6 +451,7 @@ _session_started_at: Optional[float] = None
 _correction_count: int = 0
 _assertion_count: int = 0  # Total assertions (records + queries + recalls) this session
 _correction_topics: list[str] = []  # Topics corrected this session (for targeted penalization)
+_last_episode_time: Optional[float] = None  # monotonic time of last recorded episode (DURATION signal)
 _git_observer: Optional[GitObserver] = None
 _session_lock = threading.Lock()
 _send_lock = threading.Lock()
@@ -506,6 +526,20 @@ def _init() -> None:
     except Exception:
         logger.debug("Orphan session detection failed", exc_info=True)
 
+    # Fix #10 — run theory Ebbinghaus decay on startup (not just during consolidation).
+    # This ensures theories decay on wall-clock time regardless of episode accumulation rate.
+    def _startup_decay_worker() -> None:
+        try:
+            _forgetting_local = ForgettingEngine(db, vs)
+            decayed = _forgetting_local.apply_ebbinghaus_theory_decay()
+            if decayed:
+                logger.info("Startup decay: %d theories decayed", decayed)
+        except Exception:
+            logger.debug("Startup theory decay failed", exc_info=True)
+
+    decay_thread = threading.Thread(target=_startup_decay_worker, daemon=True)
+    decay_thread.start()
+
     # Intelligence layer — background analysis engine
     intelligence = None
     try:
@@ -572,7 +606,7 @@ def _rotate_session() -> None:
     "call recall at session start" — making it the natural session boundary.
     If no session exists yet (first call), this is a no-op.
     """
-    global _current_session_id, _correction_count, _assertion_count, _correction_topics, _git_observer, _session_started_at
+    global _current_session_id, _correction_count, _assertion_count, _correction_topics, _git_observer, _session_started_at, _last_episode_time
     if _current_session_id is None:
         return
     # Capture git delta and end the old session
@@ -598,6 +632,7 @@ def _rotate_session() -> None:
     _correction_count = 0
     _assertion_count = 0
     _correction_topics = []
+    _last_episode_time = None
     _git_observer = None
     if _intelligence:
         _intelligence.reset_session()
@@ -861,7 +896,7 @@ def handle_recall(params: dict[str, Any]) -> dict[str, Any]:
 
 
 def handle_record(params: dict[str, Any]) -> dict[str, Any]:
-    global _assertion_count
+    global _assertion_count, _last_episode_time
     _require_init(_episodic)
     events = _validate_array(params.get("events", []), "events", MAX_EVENTS_PER_RECORD)
     _assertion_count += len(events)
@@ -869,6 +904,14 @@ def handle_record(params: dict[str, Any]) -> dict[str, Any]:
     project = params.get("project", "")
     branch = params.get("branch", "")
     session_id = _ensure_session(project=project, branch=branch)
+    # DURATION signal: compute session and per-topic timing
+    now_mono = time.monotonic()
+    session_duration_seconds = (now_mono - (_session_started_at or now_mono)) if _session_started_at else 0.0
+    # Distribute time equally across all events in this batch as a first approximation
+    n_events = max(len(events), 1)
+    last_ep_time = _last_episode_time or now_mono
+    batch_elapsed = max(0.0, now_mono - last_ep_time)
+    per_event_duration = batch_elapsed / n_events if batch_elapsed > 0 else 0.0
     recorded = []
     warnings: list[str] = []
     for event in events:
@@ -909,6 +952,8 @@ def handle_record(params: dict[str, Any]) -> dict[str, Any]:
             importance=event.get("importance", 0),
             contradicts_theory=contradicts,
             times_explained=times_explained,
+            topic_duration_seconds=per_event_duration,
+            session_duration_seconds=session_duration_seconds,
         )
         recorded.append(episode.id)
         # Track user exposure when they explain something
@@ -923,6 +968,8 @@ def handle_record(params: dict[str, Any]) -> dict[str, Any]:
             warn = quality_warning(episode.quality_score)
             if warn:
                 warnings.append(f"Episode '{event.get('content', '')[:50]}...': {warn}")
+    # Update last-episode timestamp so next batch gets accurate DURATION signal
+    _last_episode_time = time.monotonic()
     # Handle explicit_remember items
     for item in params.get("explicit_remember", []):
         episode = _episodic.record_explicit(session_id=session_id, content=item)
@@ -1506,6 +1553,94 @@ def handle_graph(params: dict[str, Any]) -> dict[str, Any]:
         return {"error": f"Unknown action: {action}. Use: query, sync, prebuilt, status"}
 
 
+def handle_poll(params: dict[str, Any]) -> dict[str, Any]:
+    """Fix #7 — proactive polling tool.
+
+    Returns current warnings, calibration status, trajectory predictions, and
+    intelligence insights without performing a full recall. Call this during
+    long sessions or before touching risky areas to get pre-emptive guidance.
+    """
+    _require_init(_db)
+    context = _validate_string(params.get("context", ""), "context", MAX_CONTEXT_CHARS)
+    project = params.get("project", "") or ""
+    if not project:
+        from neurosync.config import detect_git_info
+        project = detect_git_info().get("project", "")
+
+    result: dict[str, Any] = {"polled_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+
+    # Calibration status (hazard rate, doubt level)
+    if _calibration:
+        try:
+            session_minutes = (time.time() - (_session_started_at or time.time())) / 60.0
+            cal_report = _calibration.calibrate(
+                session_corrections=_correction_count,
+                session_assertions=_assertion_count,
+                session_duration_minutes=session_minutes,
+            )
+            result["calibration"] = {
+                "doubt_level": cal_report.doubt_level,
+                "should_verify": cal_report.should_verify,
+                "mean_accuracy": round(cal_report.mean_accuracy, 3),
+            }
+            injection = cal_report.format_injection()
+            if injection:
+                result["calibration"]["warning"] = injection
+        except Exception:
+            logger.debug("Poll: RCN failed", exc_info=True)
+
+    # Failure warnings for context
+    if _failure and context:
+        try:
+            warnings = _failure.check_for_warnings(context, project=project, threshold=0.4)
+            if warnings:
+                result["failure_warnings"] = warnings
+        except Exception:
+            logger.debug("Poll: failure check failed", exc_info=True)
+
+    # Trajectory predictions
+    if _db and (context or project):
+        try:
+            preempt = PreemptionEngine(_db)
+            trajectory = preempt.infer_trajectory(project=project, context=context)
+            if trajectory.predicted_files or trajectory.mistake_probability:
+                result["trajectory"] = {
+                    "predicted_files": trajectory.predicted_files[:5],
+                    "predicted_domains": trajectory.predicted_domains[:3],
+                    "mistake_risks": [
+                        {"pattern": k, "probability": round(v, 2)}
+                        for k, v in sorted(
+                            trajectory.mistake_probability.items(), key=lambda x: -x[1]
+                        )[:3]
+                    ],
+                }
+        except Exception:
+            logger.debug("Poll: trajectory failed", exc_info=True)
+
+    # Intelligence insights
+    if _intelligence:
+        try:
+            insights = _intelligence.get_relevant_insights(project=project, context=context, limit=3)
+            if insights:
+                result["insights"] = [
+                    {"type": i["insight_type"], "content": i["content"], "confidence": i["confidence"]}
+                    for i in insights
+                ]
+        except Exception:
+            logger.debug("Poll: intelligence failed", exc_info=True)
+
+    # Session stats
+    result["session"] = {
+        "corrections": _correction_count,
+        "assertions": _assertion_count,
+        "duration_minutes": round(
+            (time.time() - (_session_started_at or time.time())) / 60.0, 1
+        ),
+    }
+
+    return result
+
+
 _HANDLERS = {
     "neurosync_recall": handle_recall,
     "neurosync_record": handle_record,
@@ -1516,6 +1651,7 @@ _HANDLERS = {
     "neurosync_theories": handle_theories,
     "neurosync_consolidate": handle_consolidate,
     "neurosync_handoff": handle_handoff,
+    "neurosync_poll": handle_poll,
     "neurosync_graph": handle_graph,
 }
 
@@ -1594,10 +1730,14 @@ def _handle_request(request: dict[str, Any]) -> Optional[dict[str, Any]]:
             return response
         except InputTooLargeError as e:
             metrics.increment("error.input_too_large")
+            # Fix #15 — structured error_code field so clients can handle errors programmatically
             return _success_response(
                 req_id,
                 {
-                    "content": [{"type": "text", "text": json.dumps({"error": str(e)})}],
+                    "content": [{"type": "text", "text": json.dumps({
+                        "error": str(e),
+                        "error_code": "INPUT_TOO_LARGE",
+                    })}],
                     "isError": True,
                 },
             )
@@ -1605,10 +1745,15 @@ def _handle_request(request: dict[str, Any]) -> Optional[dict[str, Any]]:
             metrics.increment(f"error.{tool_name}")
             tb = traceback.format_exc()
             logger.error("Error in %s: %s", tool_name, tb)
+            # Fix #15 — classify error type for structured client handling
+            error_code = _classify_error(e)
             return _success_response(
                 req_id,
                 {
-                    "content": [{"type": "text", "text": json.dumps({"error": str(e)})}],
+                    "content": [{"type": "text", "text": json.dumps({
+                        "error": str(e),
+                        "error_code": error_code,
+                    })}],
                     "isError": True,
                 },
             )
@@ -1625,23 +1770,53 @@ def _handle_request(request: dict[str, Any]) -> Optional[dict[str, Any]]:
 _shutting_down = False
 _executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
 
-# Request-level deduplication: track recent request IDs to catch retries
-_recent_responses: dict[Any, dict[str, Any]] = {}
+# Request-level deduplication: track recent request IDs to catch retries.
+# Fix #14 — store (response, timestamp) tuples so entries expire after TTL
+# instead of staying in memory for the lifetime of the process.
+_recent_responses: dict[Any, tuple[dict[str, Any], float]] = {}
 _DEDUP_CACHE_SIZE = 100
+_DEDUP_CACHE_TTL_SECONDS = 600  # 10 minutes
+
+
+def _classify_error(exc: Exception) -> str:
+    """Return a machine-readable error code for structured client handling (Fix #15)."""
+    msg = str(type(exc).__name__).lower()
+    if "sqlite" in msg or "database" in msg or "operational" in msg:
+        return "DB_ERROR"
+    if "chroma" in msg or "vectorstore" in msg or "hnsw" in msg:
+        return "VS_UNAVAILABLE"
+    if "timeout" in msg:
+        return "TIMEOUT"
+    if "memory" in msg or "oom" in msg:
+        return "OUT_OF_MEMORY"
+    return "INTERNAL_ERROR"
 
 
 def _check_request_dedup(req_id: Any) -> Optional[dict[str, Any]]:
-    """Return cached response if this request ID was already processed."""
+    """Return cached response if this request ID was recently processed.
+
+    Evicts entries older than _DEDUP_CACHE_TTL_SECONDS on every lookup so
+    long-running servers don't accumulate stale entries indefinitely.
+    """
     if req_id is None:
         return None
-    return _recent_responses.get(req_id)
+    now = time.time()
+    # Evict expired entries
+    expired = [k for k, (_, ts) in _recent_responses.items() if now - ts > _DEDUP_CACHE_TTL_SECONDS]
+    for k in expired:
+        del _recent_responses[k]
+    entry = _recent_responses.get(req_id)
+    if entry is None:
+        return None
+    response, _ = entry
+    return response
 
 
 def _cache_response(req_id: Any, response: dict[str, Any]) -> None:
-    """Cache a response for dedup. Evicts oldest entries when full."""
+    """Cache a response for dedup with current timestamp. Evicts oldest when full."""
     if req_id is None:
         return
-    _recent_responses[req_id] = response
+    _recent_responses[req_id] = (response, time.time())
     if len(_recent_responses) > _DEDUP_CACHE_SIZE:
         oldest_key = next(iter(_recent_responses))
         del _recent_responses[oldest_key]
@@ -1685,11 +1860,49 @@ def _cleanup() -> None:
         logger.debug("Error closing graph during shutdown", exc_info=True)
 
 
+_TOOL_TIMEOUT_SECONDS = 30.0
+
+
 def _dispatch_tool_call(request: dict[str, Any]) -> None:
-    """Execute a tools/call request in a worker thread and send the response."""
+    """Execute a tools/call request in a worker thread with per-call timeout.
+
+    Fix #13 — uses a separate daemon thread + join(timeout) so a hung
+    ChromaDB/SQLite call can't block one of the 4 pool workers indefinitely.
+    The pool worker itself returns immediately after the timeout; the spawned
+    thread is daemon so it won't prevent process exit.
+    """
     if _shutting_down:
         return
-    response = _handle_request(request)
+
+    req_id = request.get("id")
+    result_holder: list[Optional[dict[str, Any]]] = [None]
+
+    def _run() -> None:
+        result_holder[0] = _handle_request(request)
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    t.join(timeout=_TOOL_TIMEOUT_SECONDS)
+
+    if t.is_alive():
+        # Timed out — return structured error to client
+        tool_name = request.get("params", {}).get("name", "unknown")
+        logger.warning("Tool %s timed out after %.0fs", tool_name, _TOOL_TIMEOUT_SECONDS)
+        metrics.increment(f"error.timeout.{tool_name}")
+        response = _success_response(
+            req_id,
+            {
+                "content": [{"type": "text", "text": json.dumps({
+                    "error": f"Tool '{tool_name}' timed out after {int(_TOOL_TIMEOUT_SECONDS)}s.",
+                    "error_code": "TIMEOUT",
+                })}],
+                "isError": True,
+            },
+        )
+        _send(response)
+        return
+
+    response = result_holder[0]
     if response is not None:
         _send(response)
 

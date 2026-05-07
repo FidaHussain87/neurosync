@@ -46,13 +46,20 @@ def compute_correction_signal(correction_count: int) -> SignalResult:
 
 
 def compute_depth_signal(layers_touched: list[str]) -> SignalResult:
-    """DEPTH: Files touched across N architecture layers. Weight = N."""
+    """DEPTH: Files touched across N architecture layers.
+
+    1 layer → 1.2x (single-layer episodes still get signal, not ignored).
+    2+ layers → N× (cross-layer work weighted linearly).
+    """
     unique_layers = {layer.lower() for layer in layers_touched if layer.lower() in KNOWN_LAYERS}
-    n = max(len(unique_layers), 1)
+    n = len(unique_layers)
+    if n == 0:
+        return SignalResult(signal_type="DEPTH", raw_value=0.0, multiplier=1.0)
+    multiplier = 1.2 if n == 1 else float(n)
     return SignalResult(
         signal_type="DEPTH",
         raw_value=float(n),
-        multiplier=float(n),
+        multiplier=multiplier,
     )
 
 
@@ -161,7 +168,7 @@ def compute_episode_signals(
 
     if layers_touched:
         depth = compute_depth_signal(layers_touched)
-        if depth.multiplier > 1.0:
+        if depth.multiplier > 1.0:  # 1.2 for single layer, N for multi — always >1.0 now
             signals.append(depth)
 
     if contradicts_theory:

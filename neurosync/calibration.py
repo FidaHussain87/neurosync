@@ -506,6 +506,9 @@ class ReflexiveCalibrationEngine:
         self._precursors: list[FailurePrecursor] = []
         self._initialized = False
         self._lock = threading.Lock()
+        # Dirty flag: set True whenever record_outcome() is called so calibrate()
+        # rebuilds the isotonic curve on the next call rather than serving stale data.
+        self._curve_dirty: bool = False
 
     def initialize(self, limit: int = 1000) -> None:
         """Build the accuracy model from historical data."""
@@ -546,8 +549,15 @@ class ReflexiveCalibrationEngine:
         if not self._initialized:
             self.initialize()
 
-        # Snapshot tracker state under lock to avoid races with record_outcome
+        # Rebuild calibration curve if new outcomes were recorded since last call
         with self._lock:
+            if self._curve_dirty:
+                try:
+                    theories = self._db.list_theories(limit=500)
+                    self._calibration_curve = self._build_calibration_curve(theories)
+                except Exception:
+                    pass
+                self._curve_dirty = False
             all_domains_snapshot = dict(self._tracker.all_domains)
 
         # No data at all → neutral report (no evidence of errors)
@@ -642,9 +652,13 @@ class ReflexiveCalibrationEngine:
         Persistence across restarts is handled by initialize() which rebuilds
         from stored episodes — corrections recorded via handle_correct are
         persisted as episodes and automatically picked up on next startup.
+
+        Sets _curve_dirty so the next calibrate() call rebuilds the isotonic
+        curve, preventing stale hazard rates during long debugging sessions.
         """
         with self._lock:
             self._tracker.record_assertion(domains, was_correct)
+            self._curve_dirty = True
 
     def get_domain_report(self) -> dict[str, Any]:
         """Get full domain accuracy breakdown."""

@@ -371,16 +371,20 @@ def detect_drift_warnings(
                 f"(contradicted {theory.contradiction_count}x)"
             )
 
-    # Corrections that repeat
+    # Corrections that repeat — deduplicate by normalized imperative key
     if corrections:
         correction_texts: dict[str, int] = {}
         for ep in corrections:
-            key = ep.content[:80]
+            # Normalise to 80 chars so near-identical entries merge
+            key = ep.content[:80].strip().lower()
             correction_texts[key] = correction_texts.get(key, 0) + 1
-        for text, count in correction_texts.items():
-            if count >= 2:
+        # Show at most 3 repeated-correction warnings so they don't overwhelm
+        reported = 0
+        for text, count in sorted(correction_texts.items(), key=lambda x: -x[1]):
+            if count >= 2 and reported < 3:
                 short = text[:60] + "..." if len(text) > 60 else text
                 warnings.append(f"repeated correction ({count}x): {short}")
+                reported += 1
 
     return warnings
 
@@ -442,6 +446,16 @@ class CognitiveLens:
 
         # Filter out high prior_alignment lenses (LLM already knows)
         candidates = [c for c in candidates if c.prior_alignment < 0.75]
+
+        # Deduplicate by imperative text: keep highest-impact lens per unique imperative.
+        # Prevents identical correction records (e.g. test fixtures) from flooding output.
+        seen_imperatives: dict[str, Lens] = {}
+        for lens in candidates:
+            key = lens.imperative.strip().lower()
+            existing = seen_imperatives.get(key)
+            if existing is None or lens.behavioral_impact > existing.behavioral_impact:
+                seen_imperatives[key] = lens
+        candidates = list(seen_imperatives.values())
 
         # Optimize selection within budget
         lens_set = optimize_lens_set(candidates, token_budget, max_lenses=10)

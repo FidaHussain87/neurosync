@@ -28,8 +28,9 @@ class TestSignals:
     def test_depth_signal(self):
         s0 = compute_depth_signal([])
         assert s0.multiplier == 1.0
+        # Single known layer: 1.2x (Fix #9 — single-layer is no longer silently ignored)
         s1 = compute_depth_signal(["service"])
-        assert s1.multiplier == 1.0
+        assert s1.multiplier == 1.2
         s3 = compute_depth_signal(["service", "dao", "inventory"])
         assert s3.multiplier == 3.0
 

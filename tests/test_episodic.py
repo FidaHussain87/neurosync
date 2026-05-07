@@ -31,7 +31,8 @@ class TestEpisodicMemory:
         )
         assert episode.id
         assert episode.content == "Chose SQLite over PostgreSQL"
-        assert episode.signal_weight == 1.0
+        # Single known layer now gets 1.2x DEPTH signal (Fix #9: single-layer is not ignored)
+        assert episode.signal_weight == 1.2
         loaded = episodic.get_episode(episode.id)
         assert loaded is not None
 
