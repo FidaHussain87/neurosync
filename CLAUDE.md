@@ -41,6 +41,9 @@ Call `neurosync_record` with structured episodes when the session ends. Write ca
 - **Intelligence layer** — background analyzers mine stored data for patterns (peak hours, fatigue, file co-occurrence, volatility). Insights surface automatically in recall/record responses.
 - **Domain classification** — every episode is auto-tagged with conceptual domains (from 32-domain taxonomy across 7 families). Enables cross-project knowledge transfer: "concurrency" is concurrency whether in Python, Go, or Perl. Domain-scoped theories are created when episodes span multiple projects but share a domain.
 - **Cognitive replay** — when sessions contain debugging chains (frustration→dead ends→resolution), reasoning path skeletons are captured automatically. On future recall, if a similar problem is detected, surfaced as "skip X, go directly to Y" advice.
+- **Cognitive Lensing Protocol (CLP)** — transforms verbose theories/corrections/failures into minimal-token imperative "lenses" (e.g., `NEVER throw. Return Result<T,E>.`). Achieves 15-25x token efficiency via: Epistemic Delta Encoding (only surfaces what LLM doesn't already know), Imperative Compression (declarative→imperative), Information Density Maximization (knapsack optimization: max behavioral impact per token). Scales sublinearly: more knowledge = better compression = fewer tokens.
+- **Predictive Pre-emption** — infers developer trajectory from git branch names, file co-occurrence patterns, and domain context. Pre-selects relevant lenses and warnings BEFORE mistakes happen.
+- **Topological Knowledge Health (TKH)** — applies persistent homology from algebraic topology to the knowledge graph. Computes Betti numbers (β₀ = connected components, β₁ = knowledge voids), finds articulation points (fragile bridges), measures crystallization (structural maturity), and domain coverage. Health score (0-100) exposed via `neurosync_status`. Zero external TDA dependencies — implements Union-Find and boundary matrix reduction natively.
 - **Theory versioning** — every mutation (confirm, contradict, retire) saves a snapshot; rollback to any previous version via `neurosync_theories action=rollback`.
 - **Forgetting pass** — after consolidation, Ebbinghaus retention curves prune low-value episodes and decay stale theories
 - **User familiarity tracking** — topics you know well are suppressed from recall; corrections reduce familiarity
@@ -81,6 +84,9 @@ Call `neurosync_record` with structured episodes when the session ends. Write ca
   - `causal.py` — Causal graph construction and querying
   - `graph.py` — Optional Neo4j knowledge graph sync and querying
   - `replay.py` — Cognitive Replay Engine: reasoning path capture, detection, matching, surfacing
+  - `lensing.py` — Cognitive Lensing Protocol: epistemic delta encoding, imperative compression, knapsack optimization
+  - `preemption.py` — Predictive Pre-emption: trajectory inference, file prediction, mistake forecasting
+  - `topology.py` — Topological Knowledge Health: persistent homology (β₀, β₁), articulation points, crystallization, void detection
   - `intelligence/` — Background intelligence layer (zero LLM cost)
     - `__init__.py` — IntelligenceEngine orchestrator (daemon thread, scheduled analyzers)
     - `models.py` — Insight + DeveloperProfile dataclasses
@@ -89,7 +95,7 @@ Call `neurosync_record` with structured episodes when the session ends. Write ca
     - `analyzers/base.py` — BaseAnalyzer ABC (interval_seconds, max_runtime_ms)
     - `analyzers/work_patterns.py` — Peak hours, session rhythm, fatigue, day-of-week patterns
     - `analyzers/file_network.py` — File co-occurrence (Jaccard), volatility hotspots
-- `tests/` — pytest test suite (~539 tests)
+- `tests/` — pytest test suite (~630 tests)
 - `frontend/` — Interactive 3D graph visualization (React 18 + TypeScript)
   - `src/components/` — GraphCanvas (3D), Sidebar, DetailPanel, QueryRunner, ConnectionForm
   - `src/hooks/` — useNeo4jConnection, useGraphData
@@ -133,14 +139,16 @@ cd frontend && npm run build                # production build to frontend/dist/
 
 ## Architecture
 
-Five-layer memory system:
+Seven-layer memory system:
 1. **Episodic** (Layer 1) — Raw session events stored in SQLite/PostgreSQL + ChromaDB, auto-tagged with conceptual domains
 2. **Semantic** (Layer 2) — Consolidated theories with confidence scores, version history, and domain-scoped cross-project knowledge
 3. **Working** (Layer 3) — Context-aware recall via RetrievalPipeline with user familiarity filtering + cognitive replay surfacing
 4. **Intelligence** (Layer 4) — Background pattern mining produces insights and developer profile
 5. **Replay** (Layer 5) — Reasoning path capture: hypothesis→test→eliminate→realize chains stored as ~300-byte skeletons
+6. **Lensing** (Layer 6) — Cognitive Lensing Protocol: compresses all knowledge into minimal-token imperative format, optimized per-token-budget via knapsack. Predictive pre-emption infers trajectory and surfaces lenses before mistakes happen.
+7. **Topology** (Layer 7) — Topological Knowledge Health via persistent homology. Computes Betti numbers (β₀ components, β₁ voids), Euler characteristic, articulation points (fragility), crystallization score, domain coverage. Health report (0-100) diagnoses structural gaps in knowledge.
 
-Data flows: record -> episodes (+ domain classification + replay detection) -> auto-consolidation (background) -> theories -> forgetting pass -> recall (+ intelligence insights + cognitive replays) -> graph-sync -> Neo4j -> frontend visualization
+Data flows: record -> episodes (+ domain classification + replay detection) -> auto-consolidation (background) -> theories -> forgetting pass -> recall -> **CLP compression** (theories + failures + corrections → optimized lens set, ~80 tokens) -> response (+ intelligence insights + replays + trajectory) -> graph-sync -> Neo4j -> frontend visualization
 
 ### Database Backends
 

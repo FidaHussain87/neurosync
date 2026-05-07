@@ -21,12 +21,15 @@ from neurosync.failure import FailureModel
 from neurosync.forgetting import ForgettingEngine
 from neurosync.git_observer import GitObserver
 from neurosync.hierarchy import TheoryHierarchy
+from neurosync.lensing import CognitiveLens
 from neurosync.logging import configure_logging, get_logger, metrics
 from neurosync.models import EPISODE_TYPES
+from neurosync.preemption import PreemptionEngine
 from neurosync.quality import quality_warning
 from neurosync.replay import ReplayMatcher, detect_replay_from_session
 from neurosync.retrieval import RetrievalPipeline
 from neurosync.semantic import SemanticMemory
+from neurosync.topology import TopologicalHealthEngine
 from neurosync.user_model import UserModel
 from neurosync.vectorstore import VectorStore
 from neurosync.version import __version__
@@ -750,7 +753,6 @@ def handle_recall(params: dict[str, Any]) -> dict[str, Any]:
     if context and _db:
         try:
             matcher = ReplayMatcher(_db)
-            # Extract domains from context for matching
             from neurosync.intelligence.domains import classify_episode as _classify
 
             ctx_domains = _classify(content=context)
@@ -768,6 +770,59 @@ def handle_recall(params: dict[str, Any]) -> dict[str, Any]:
                     })
         except Exception:
             logger.debug("Replay surfacing failed", exc_info=True)
+    # Cognitive Lensing Protocol: compress knowledge into minimal-token imperatives
+    if _db:
+        try:
+            lens_engine = CognitiveLens(_db)
+            preempt = PreemptionEngine(_db)
+            # Gather theories from recall result
+            theories = []
+            if result.get("primary"):
+                t = _db.get_theory(result["primary"].get("id", ""))
+                if t:
+                    theories.append(t)
+            for sup in result.get("supporting", []):
+                t = _db.get_theory(sup.get("id", ""))
+                if t:
+                    theories.append(t)
+            # Gather recent corrections and failures
+            corrections = _db.list_episodes(event_type="correction", limit=20)
+            failures = _db.list_failure_records(project=project, limit=10) if hasattr(_db, "list_failure_records") else []
+            # Infer trajectory for pre-emptive context
+            trajectory = preempt.infer_trajectory(
+                project=project, branch=branch, context=context,
+            )
+            # Generate optimized lens set (80-token budget)
+            lens_set = lens_engine.generate_lens_set(
+                theories=theories,
+                failures=failures,
+                corrections=corrections,
+                token_budget=80,
+                context=context,
+                domains=trajectory.predicted_domains,
+            )
+            if lens_set.lenses or lens_set.drift_warnings:
+                result["lenses"] = {
+                    "items": [
+                        {"context": ln.context, "imperative": ln.imperative, "confidence": round(ln.confidence, 2)}
+                        for ln in lens_set.lenses
+                    ],
+                    "drift_warnings": lens_set.drift_warnings,
+                    "tokens_used": lens_set.total_tokens,
+                    "impact_score": round(lens_set.total_impact, 2),
+                }
+            # Add trajectory predictions
+            if trajectory.predicted_files or trajectory.mistake_probability:
+                result["trajectory"] = {
+                    "predicted_files": trajectory.predicted_files[:5],
+                    "predicted_domains": trajectory.predicted_domains[:3],
+                    "mistake_risks": [
+                        {"pattern": k, "probability": round(v, 2)}
+                        for k, v in sorted(trajectory.mistake_probability.items(), key=lambda x: -x[1])[:3]
+                    ],
+                }
+        except Exception:
+            logger.debug("Cognitive lensing failed", exc_info=True)
     return _add_protocol_hint("neurosync_recall", result)
 
 
@@ -1150,6 +1205,13 @@ def handle_status(params: dict[str, Any]) -> dict[str, Any]:
             result["intelligence"]["developer_profile"] = _intelligence.get_developer_profile()
         except Exception:
             result["intelligence"] = {"healthy": False}
+    # Topological Knowledge Health
+    try:
+        tkh = TopologicalHealthEngine(_db)
+        health = tkh.compute_health(project=params.get("project", ""))
+        result["topology"] = health.to_dict()
+    except Exception:
+        result["topology"] = {"healthy": False}
     return result
 
 
