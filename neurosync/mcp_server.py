@@ -132,6 +132,15 @@ TOOLS = [
                     "description": "Max output tokens (default 500)",
                     "default": 500,
                 },
+                "verbosity": {
+                    "type": "string",
+                    "enum": ["slim", "full"],
+                    "description": (
+                        "slim: lenses + primary theory only (~150 tokens). "
+                        "full: all fields — theories, insights, replays, calibration (default)."
+                    ),
+                    "default": "full",
+                },
             },
         },
     },
@@ -795,6 +804,7 @@ def handle_recall(params: dict[str, Any]) -> dict[str, Any]:
     branch = params.get("branch") or git_info.get("branch", "")
     context = _validate_string(params.get("context", ""), "context", MAX_CONTEXT_CHARS)
     max_tokens = params.get("max_tokens", 500)
+    verbosity = params.get("verbosity", "full")
     # Use RetrievalPipeline (includes UserModel filtering, parent context, continuations)
     result = _retrieval.recall(
         project=project,
@@ -928,6 +938,29 @@ def handle_recall(params: dict[str, Any]) -> dict[str, Any]:
                 }
         except Exception:
             logger.debug("Cognitive lensing failed", exc_info=True)
+    # slim verbosity: return only primary theory + lenses, skip all further enrichment
+    if verbosity == "slim":
+        slim_result: dict[str, Any] = {}
+        if result.get("primary"):
+            slim_result["primary"] = result["primary"]
+        if result.get("lenses"):
+            slim_result["lenses"] = result["lenses"]
+        if result.get("warnings"):
+            slim_result["warnings"] = result["warnings"]
+        # Still track self-learning so usefulness scores stay accurate
+        if _selflearn and _current_session_id:
+            try:
+                theory_ids = [result["primary"]["id"]] if result.get("primary", {}).get("id") else []
+                _selflearn.on_recall(
+                    session_id=_current_session_id,
+                    theory_ids=theory_ids,
+                    episode_ids=[],
+                    tokens_used=len(str(slim_result)) // 4,
+                    context=context,
+                )
+            except Exception:
+                logger.debug("Self-learning recall tracking failed (slim)", exc_info=True)
+        return _add_protocol_hint("neurosync_recall", slim_result)
     # Reflexive Calibration Network: inject metacognitive warnings
     if _calibration:
         try:
