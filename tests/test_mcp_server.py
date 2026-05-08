@@ -36,7 +36,7 @@ class TestMcpProtocol:
         resp = mcp._handle_request(req)
         assert resp["result"]["protocolVersion"] == "2024-11-05"
         assert resp["result"]["serverInfo"]["name"] == "neurosync"
-        assert resp["result"]["serverInfo"]["version"] == "0.4.0"
+        assert resp["result"]["serverInfo"]["version"] == "1.0.0"
 
     def test_tools_list(self):
         req = {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}
@@ -51,10 +51,11 @@ class TestMcpProtocol:
         assert "neurosync_status" in names
         assert "neurosync_theories" in names
         assert "neurosync_consolidate" in names
-        assert len(tools) == 11
+        assert len(tools) == 12
         assert "neurosync_handoff" in names
         assert "neurosync_poll" in names
         assert "neurosync_graph" in names
+        assert "neurosync_insights" in names
 
     def test_ping(self):
         req = {"jsonrpc": "2.0", "id": 3, "method": "ping", "params": {}}
@@ -717,7 +718,7 @@ class TestCognitiveFeatures:
             "params": {"name": "neurosync_status", "arguments": {}},
         })
         content = json.loads(resp["result"]["content"][0]["text"])
-        assert content.get("version") == "0.4.0"
+        assert content.get("version") == "1.0.0"
         assert "causal_links" in content
         assert "failure_records" in content
 

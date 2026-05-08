@@ -15,7 +15,7 @@ from neurosync.models import (
 class TestDatabase:
     def test_schema_initialized(self, db):
         stats = db.stats()
-        assert stats["schema_version"] == 10
+        assert stats["schema_version"] == 11
         assert stats["sessions"] == 0
 
     def test_save_and_get_session(self, db):
@@ -207,7 +207,7 @@ class TestDatabase:
         database = Database(config)
         # Verify migration ran: schema at v3
         stats = database.stats()
-        assert stats["schema_version"] == 10
+        assert stats["schema_version"] == 11
         # Insert and read episode with v2 + v3 columns
         from neurosync.models import Episode, Session
         session = Session(project="test")
@@ -283,7 +283,7 @@ class TestDatabase:
         from neurosync.db import Database
         database = Database(config)
         stats = database.stats()
-        assert stats["schema_version"] == 10
+        assert stats["schema_version"] == 11
         # Verify causal_links table exists
         from neurosync.models import CausalLink
         link = CausalLink(cause_text="A", effect_text="B")
@@ -301,7 +301,7 @@ class TestDatabase:
         # Running again should not fail
         db2 = Database(config)
         stats = db2.stats()
-        assert stats["schema_version"] == 10
+        assert stats["schema_version"] == 11
         db2.close()
 
     def test_save_episode_causal_roundtrip(self, db):
@@ -523,7 +523,7 @@ class TestDatabase:
         # Second open triggers _init_schema again — should be a no-op
         db2 = Database(config)
         stats2 = db2.stats()
-        assert stats1["schema_version"] == stats2["schema_version"] == 10
+        assert stats1["schema_version"] == stats2["schema_version"] == 11
         db2.close()
 
     # --- Phase 3: JSON corruption handling ---
@@ -560,7 +560,7 @@ class TestDatabase:
         from neurosync.db import Database
         with Database(config) as database:
             stats = database.stats()
-            assert stats["schema_version"] == 10
+            assert stats["schema_version"] == 11
         # After context manager exit, connection should be closed
 
     # --- v4: Migration v3→v4 ---
@@ -647,7 +647,7 @@ class TestDatabase:
         from neurosync.db import Database
         database = Database(config)
         stats = database.stats()
-        assert stats["schema_version"] == 10
+        assert stats["schema_version"] == 11
         # Verify junction tables were created and backfilled
         assert database.get_theory_episode_ids("th1") == ["ep1"]
         assert database.get_theories_for_episode("ep1") == ["th1"]
@@ -765,7 +765,7 @@ class TestDatabase:
         from neurosync.db import Database
         database = Database(config)
         stats = database.stats()
-        assert stats["schema_version"] == 10
+        assert stats["schema_version"] == 11
         # Verify normalized columns were added and backfilled
         results = database.list_causal_links_normalized("missing index", "slow query")
         assert len(results) == 1

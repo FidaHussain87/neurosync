@@ -11,7 +11,7 @@ license = "MIT"
 requires-python = ">=3.9"
 authors = [{ name = "NeuroSync Contributors" }]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 5 - Production/Stable",
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: MIT License",
     "Topic :: Software Development :: Libraries",
@@ -26,6 +26,7 @@ dev = [
     "pytest>=7.0",
     "pytest-cov>=4.0",
     "ruff>=0.4.0",
+    "httpx>=0.27.0",
 ]
 tiktoken = [
     "tiktoken>=0.5.0",
@@ -34,6 +35,17 @@ neo4j = [
     "neo4j>=5.0",
 ]
 postgresql = [
+    "psycopg2-binary>=2.9",
+]
+api = [
+    "fastapi>=0.111.0",
+    "uvicorn[standard]>=0.29.0",
+]
+all = [
+    "fastapi>=0.111.0",
+    "uvicorn[standard]>=0.29.0",
+    "tiktoken>=0.5.0",
+    "neo4j>=5.0",
     "psycopg2-binary>=2.9",
 ]
 

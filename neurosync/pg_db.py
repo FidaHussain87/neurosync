@@ -30,7 +30,7 @@ from neurosync.models import (
 
 logger = get_logger("pg_db")
 
-CURRENT_SCHEMA_VERSION = 10
+CURRENT_SCHEMA_VERSION = 11
 
 # PostgreSQL schema — uses SERIAL instead of AUTOINCREMENT, BOOLEAN instead of
 # INTEGER for booleans, and native JSON handling.
@@ -551,6 +551,80 @@ class PostgresDatabase:
             cur.execute(
                 "CREATE INDEX IF NOT EXISTS idx_replays_confidence"
                 " ON cognitive_replays(confidence)"
+            )
+        if from_version < 11:
+            cur.execute(
+                """CREATE TABLE IF NOT EXISTS recall_log (
+                    id            TEXT PRIMARY KEY,
+                    session_id    TEXT NOT NULL,
+                    recalled_at   TEXT NOT NULL,
+                    context_hash  TEXT NOT NULL DEFAULT '',
+                    theory_ids    JSONB NOT NULL DEFAULT '[]',
+                    episode_ids   JSONB NOT NULL DEFAULT '[]',
+                    tokens_used   INTEGER DEFAULT 0,
+                    outcome       TEXT DEFAULT 'pending',
+                    outcome_at    TEXT,
+                    correction_count INTEGER DEFAULT 0,
+                    metadata      JSONB DEFAULT '{}'
+                )"""
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_recall_log_session"
+                " ON recall_log(session_id)"
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_recall_log_outcome"
+                " ON recall_log(outcome)"
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_recall_log_recalled"
+                " ON recall_log(recalled_at)"
+            )
+            cur.execute(
+                """CREATE TABLE IF NOT EXISTS memory_usefulness (
+                    entity_id     TEXT NOT NULL,
+                    entity_type   TEXT NOT NULL,
+                    alpha         REAL DEFAULT 1.0,
+                    beta          REAL DEFAULT 1.0,
+                    recall_count  INTEGER DEFAULT 0,
+                    last_recalled TEXT,
+                    last_outcome  TEXT DEFAULT '',
+                    score         REAL DEFAULT 0.5,
+                    created_at    TEXT NOT NULL,
+                    updated_at    TEXT NOT NULL,
+                    PRIMARY KEY (entity_id, entity_type)
+                )"""
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_usefulness_score"
+                " ON memory_usefulness(score DESC)"
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_usefulness_type"
+                " ON memory_usefulness(entity_type)"
+            )
+            cur.execute(
+                """CREATE TABLE IF NOT EXISTS distilled_knowledge (
+                    id                TEXT PRIMARY KEY,
+                    source_theory_id  TEXT NOT NULL,
+                    distilled_content TEXT NOT NULL DEFAULT '',
+                    original_tokens   INTEGER DEFAULT 0,
+                    distilled_tokens  INTEGER DEFAULT 0,
+                    compression_ratio REAL DEFAULT 0.0,
+                    similarity_score  REAL DEFAULT 0.0,
+                    distilled_at      TEXT NOT NULL,
+                    recall_count      INTEGER DEFAULT 0,
+                    positive_count    INTEGER DEFAULT 0,
+                    active            BOOLEAN DEFAULT TRUE
+                )"""
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_distilled_source"
+                " ON distilled_knowledge(source_theory_id)"
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_distilled_active"
+                " ON distilled_knowledge(active, source_theory_id)"
             )
 
     def close(self) -> None:
@@ -1982,3 +2056,315 @@ class PostgresDatabase:
             "schema_version": CURRENT_SCHEMA_VERSION,
             "backend": "postgresql",
         }
+
+    # ------------------------------------------------------------------ #
+    # recall_log CRUD                                                      #
+    # ------------------------------------------------------------------ #
+
+    def insert_recall_log(
+        self,
+        recall_id: str,
+        session_id: str,
+        recalled_at: str,
+        context_hash: str,
+        theory_ids: list[str],
+        episode_ids: list[str],
+        tokens_used: int,
+        metadata: dict | None = None,
+    ) -> None:
+        """Insert a new recall_log entry with outcome='pending'."""
+        with self._pool.getconn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO recall_log
+                       (id, session_id, recalled_at, context_hash, theory_ids,
+                        episode_ids, tokens_used, outcome, correction_count, metadata)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, 'pending', 0, %s)
+                       ON CONFLICT (id) DO UPDATE SET
+                           session_id = excluded.session_id,
+                           recalled_at = excluded.recalled_at,
+                           context_hash = excluded.context_hash,
+                           theory_ids = excluded.theory_ids,
+                           episode_ids = excluded.episode_ids,
+                           tokens_used = excluded.tokens_used,
+                           metadata = excluded.metadata""",
+                    (
+                        recall_id,
+                        session_id,
+                        recalled_at,
+                        context_hash,
+                        self._to_json(theory_ids),
+                        self._to_json(episode_ids),
+                        tokens_used,
+                        self._to_json(metadata or {}),
+                    ),
+                )
+            conn.commit()
+
+    def update_recall_log_outcome(
+        self,
+        recall_id: str,
+        outcome: str,
+        correction_count: int,
+        outcome_at: str,
+    ) -> None:
+        """Update outcome field on a recall_log entry."""
+        with self._pool.getconn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """UPDATE recall_log
+                       SET outcome = %s, correction_count = %s, outcome_at = %s
+                       WHERE id = %s""",
+                    (outcome, correction_count, outcome_at, recall_id),
+                )
+            conn.commit()
+
+    def increment_recall_log_corrections(self, recall_id: str) -> None:
+        """Atomically increment correction_count on a pending recall_log entry."""
+        with self._pool.getconn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE recall_log SET correction_count = correction_count + 1 WHERE id = %s",
+                    (recall_id,),
+                )
+            conn.commit()
+
+    def get_recall_log_by_session(self, session_id: str) -> list[dict]:
+        """Return all recall_log entries for a session, ordered by recalled_at."""
+        with self._pool.getconn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT * FROM recall_log WHERE session_id = %s ORDER BY recalled_at",
+                    (session_id,),
+                )
+                cols = [d[0] for d in cur.description]
+                return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+    def get_recall_log(self, recall_id: str) -> dict | None:
+        """Return a single recall_log entry by id."""
+        with self._pool.getconn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT * FROM recall_log WHERE id = %s", (recall_id,))
+                row = cur.fetchone()
+                if row is None:
+                    return None
+                cols = [d[0] for d in cur.description]
+                return dict(zip(cols, row))
+
+    # ------------------------------------------------------------------ #
+    # memory_usefulness CRUD                                               #
+    # ------------------------------------------------------------------ #
+
+    def get_usefulness(self, entity_id: str, entity_type: str) -> dict | None:
+        """Return usefulness record for an entity, or None if not found."""
+        with self._pool.getconn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT * FROM memory_usefulness WHERE entity_id = %s AND entity_type = %s",
+                    (entity_id, entity_type),
+                )
+                row = cur.fetchone()
+                if row is None:
+                    return None
+                cols = [d[0] for d in cur.description]
+                return dict(zip(cols, row))
+
+    def upsert_usefulness(
+        self,
+        entity_id: str,
+        entity_type: str,
+        alpha: float,
+        beta: float,
+        recall_count: int,
+        last_recalled: str,
+        last_outcome: str,
+        score: float,
+        now: str,
+    ) -> None:
+        """Insert or update a memory_usefulness record."""
+        with self._pool.getconn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO memory_usefulness
+                       (entity_id, entity_type, alpha, beta, recall_count,
+                        last_recalled, last_outcome, score, created_at, updated_at)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                       ON CONFLICT (entity_id, entity_type) DO UPDATE SET
+                           alpha         = excluded.alpha,
+                           beta          = excluded.beta,
+                           recall_count  = excluded.recall_count,
+                           last_recalled = excluded.last_recalled,
+                           last_outcome  = excluded.last_outcome,
+                           score         = excluded.score,
+                           updated_at    = excluded.updated_at""",
+                    (
+                        entity_id,
+                        entity_type,
+                        alpha,
+                        beta,
+                        recall_count,
+                        last_recalled,
+                        last_outcome,
+                        score,
+                        now,
+                        now,
+                    ),
+                )
+            conn.commit()
+
+    def bulk_update_usefulness(self, records: list[dict]) -> None:
+        """Batch-upsert multiple usefulness records."""
+        if not records:
+            return
+        sql = """INSERT INTO memory_usefulness
+                   (entity_id, entity_type, alpha, beta, recall_count,
+                    last_recalled, last_outcome, score, created_at, updated_at)
+                   VALUES (%(entity_id)s, %(entity_type)s, %(alpha)s, %(beta)s,
+                           %(recall_count)s, %(last_recalled)s, %(last_outcome)s,
+                           %(score)s, %(now)s, %(now)s)
+                   ON CONFLICT (entity_id, entity_type) DO UPDATE SET
+                       alpha         = excluded.alpha,
+                       beta          = excluded.beta,
+                       recall_count  = excluded.recall_count,
+                       last_recalled = excluded.last_recalled,
+                       last_outcome  = excluded.last_outcome,
+                       score         = excluded.score,
+                       updated_at    = excluded.updated_at"""
+        with self._pool.getconn() as conn:
+            with conn.cursor() as cur:
+                cur.executemany(sql, records)
+            conn.commit()
+
+    def list_low_usefulness(
+        self,
+        entity_type: str = "theory",
+        max_score: float = 0.20,
+        min_recall_count: int = 10,
+    ) -> list[dict]:
+        """Return entities with low usefulness score (retirement candidates)."""
+        with self._pool.getconn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT * FROM memory_usefulness
+                       WHERE entity_type = %s AND score <= %s AND recall_count >= %s
+                       ORDER BY score ASC""",
+                    (entity_type, max_score, min_recall_count),
+                )
+                cols = [d[0] for d in cur.description]
+                return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+    def list_usefulness_for_entities(
+        self, entity_ids: list[str], entity_type: str
+    ) -> dict[str, dict]:
+        """Return usefulness records keyed by entity_id for a list of ids."""
+        if not entity_ids:
+            return {}
+        with self._pool.getconn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT * FROM memory_usefulness WHERE entity_id = ANY(%s)"
+                    " AND entity_type = %s",
+                    (entity_ids, entity_type),
+                )
+                cols = [d[0] for d in cur.description]
+                result: dict[str, dict] = {}
+                for row in cur.fetchall():
+                    d = dict(zip(cols, row))
+                    result[d["entity_id"]] = d
+                return result
+
+    # ------------------------------------------------------------------ #
+    # distilled_knowledge CRUD                                             #
+    # ------------------------------------------------------------------ #
+
+    def insert_distilled(
+        self,
+        distilled_id: str,
+        source_theory_id: str,
+        distilled_content: str,
+        original_tokens: int,
+        distilled_tokens: int,
+        compression_ratio: float,
+        similarity_score: float,
+        distilled_at: str,
+    ) -> None:
+        """Insert a distilled_knowledge entry (deactivates prior entries for same theory)."""
+        with self._pool.getconn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE distilled_knowledge SET active = FALSE WHERE source_theory_id = %s",
+                    (source_theory_id,),
+                )
+                cur.execute(
+                    """INSERT INTO distilled_knowledge
+                       (id, source_theory_id, distilled_content, original_tokens,
+                        distilled_tokens, compression_ratio, similarity_score,
+                        distilled_at, recall_count, positive_count, active)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 0, 0, TRUE)
+                       ON CONFLICT (id) DO UPDATE SET
+                           distilled_content = excluded.distilled_content,
+                           compression_ratio = excluded.compression_ratio,
+                           similarity_score  = excluded.similarity_score,
+                           active            = TRUE""",
+                    (
+                        distilled_id,
+                        source_theory_id,
+                        distilled_content,
+                        original_tokens,
+                        distilled_tokens,
+                        compression_ratio,
+                        similarity_score,
+                        distilled_at,
+                    ),
+                )
+            conn.commit()
+
+    def get_distilled_for_theory(self, source_theory_id: str) -> dict | None:
+        """Return the active distilled entry for a theory, or None."""
+        with self._pool.getconn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT * FROM distilled_knowledge
+                       WHERE source_theory_id = %s AND active = TRUE
+                       ORDER BY distilled_at DESC LIMIT 1""",
+                    (source_theory_id,),
+                )
+                row = cur.fetchone()
+                if row is None:
+                    return None
+                cols = [d[0] for d in cur.description]
+                return dict(zip(cols, row))
+
+    def list_active_distilled(self, limit: int = 500) -> list[dict]:
+        """Return all active distilled_knowledge entries ordered by recall_count desc."""
+        with self._pool.getconn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT * FROM distilled_knowledge WHERE active = TRUE
+                       ORDER BY recall_count DESC LIMIT %s""",
+                    (limit,),
+                )
+                cols = [d[0] for d in cur.description]
+                return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+    def increment_distilled_recall(
+        self, distilled_id: str, positive: bool = True
+    ) -> None:
+        """Increment recall_count and optionally positive_count on a distilled entry."""
+        with self._pool.getconn() as conn:
+            with conn.cursor() as cur:
+                if positive:
+                    cur.execute(
+                        """UPDATE distilled_knowledge
+                           SET recall_count = recall_count + 1,
+                               positive_count = positive_count + 1
+                           WHERE id = %s""",
+                        (distilled_id,),
+                    )
+                else:
+                    cur.execute(
+                        "UPDATE distilled_knowledge"
+                        " SET recall_count = recall_count + 1 WHERE id = %s",
+                        (distilled_id,),
+                    )
+            conn.commit()

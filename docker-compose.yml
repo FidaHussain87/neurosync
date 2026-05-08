@@ -1,0 +1,56 @@
+version: "3.9"
+
+services:
+  neurosync:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      NEUROSYNC_DATA_DIR: /data
+      NEUROSYNC_DB_BACKEND: ${NEUROSYNC_DB_BACKEND:-sqlite}
+      NEUROSYNC_LOG_FORMAT: json
+      NEUROSYNC_CORS_ORIGINS: ${NEUROSYNC_CORS_ORIGINS:-*}
+      # PostgreSQL DSN — only used when NEUROSYNC_DB_BACKEND=postgresql
+      NEUROSYNC_PG_DSN: ${NEUROSYNC_PG_DSN:-postgresql://neurosync:neurosync@neurosync-postgres:5432/neurosync}
+    volumes:
+      - neurosync_data:/data
+    depends_on:
+      neurosync-postgres:
+        condition: service_started
+        required: false
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8000/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  neurosync-postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: neurosync
+      POSTGRES_USER: neurosync
+      POSTGRES_PASSWORD: neurosync
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    profiles:
+      - postgres
+
+  neo4j:
+    image: neo4j:5
+    environment:
+      NEO4J_AUTH: neo4j/neurosync
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    volumes:
+      - neo4j_data:/data
+    restart: unless-stopped
+    profiles:
+      - neo4j
+
+volumes:
+  neurosync_data:
+  pg_data:
+  neo4j_data:

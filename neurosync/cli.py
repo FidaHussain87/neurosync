@@ -166,6 +166,15 @@ def cmd_downgrade(args: argparse.Namespace) -> None:
             db.close()
 
 
+def cmd_serve_api(args: argparse.Namespace) -> None:
+    """Start the REST API server."""
+    import uvicorn
+    from neurosync.api_server import create_app
+
+    app = create_app()
+    uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+
+
 def cmd_reset(args: argparse.Namespace) -> None:
     """Reset all NeuroSync data."""
     if not args.confirm:
@@ -426,6 +435,11 @@ def main() -> None:
     # serve
     subparsers.add_parser("serve", help="Start MCP server on stdio")
 
+    # serve-api
+    p_serve_api = subparsers.add_parser("serve-api", help="Start REST API server")
+    p_serve_api.add_argument("--host", default="0.0.0.0", help="Bind host (default: 0.0.0.0)")
+    p_serve_api.add_argument("--port", type=int, default=8000, help="Bind port (default: 8000)")
+
     # status
     subparsers.add_parser("status", help="Show NeuroSync status")
 
@@ -491,6 +505,7 @@ def main() -> None:
 
     commands = {
         "serve": cmd_serve,
+        "serve-api": cmd_serve_api,
         "status": cmd_status,
         "consolidate": cmd_consolidate,
         "import-starter-pack": cmd_import_starter_pack,

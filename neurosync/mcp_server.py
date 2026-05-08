@@ -346,6 +346,44 @@ TOOLS = [
         },
     },
     {
+        "name": "neurosync_insights",
+        "description": (
+            "Query developer intelligence — patterns, predictions, learning trajectory, and warnings "
+            "mined from your session history. Zero LLM cost: pure local statistical analysis. "
+            "Categories: work_patterns (peak hours, session rhythm, fatigue), "
+            "file_network (co-occurrence, volatility hotspots), "
+            "event_flows (workflow patterns, stuck detection, learning cycles), "
+            "signal_predictor (which signal combos predict theory creation), "
+            "learning (skill trajectory, plateaus, near-mastery topics), "
+            "warnings (all warning-type insights), all (everything)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "category": {
+                    "type": "string",
+                    "enum": [
+                        "work_patterns", "file_network", "event_flows",
+                        "signal_predictor", "learning", "warnings", "all",
+                    ],
+                    "default": "all",
+                    "description": "Category of insights to retrieve",
+                },
+                "project": {"type": "string", "description": "Filter by project"},
+                "limit": {
+                    "type": "integer",
+                    "default": 10,
+                    "description": "Max insights to return",
+                },
+                "min_confidence": {
+                    "type": "number",
+                    "default": 0.3,
+                    "description": "Minimum confidence threshold (0.0-1.0)",
+                },
+            },
+        },
+    },
+    {
         "name": "neurosync_graph",
         "description": (
             "Query or sync the Neo4j knowledge graph. Requires neo4j extra: "
@@ -460,12 +498,13 @@ _consolidation_running = False
 _last_consolidation_result: Optional[dict[str, Any]] = None
 _intelligence: Any = None
 _calibration: Optional[ReflexiveCalibrationEngine] = None
+_selflearn: Any = None
 
 
 def _init() -> None:
     global _config, _db, _vs, _episodic, _semantic
     global _analogy, _causal, _failure, _forgetting, _hierarchy
-    global _user_model, _retrieval
+    global _user_model, _retrieval, _selflearn
     if _db is not None:
         return
 
@@ -561,6 +600,16 @@ def _init() -> None:
     except Exception:
         logger.debug("RCN init failed", exc_info=True)
 
+    # Self-Learning Memory Layer
+    selflearn = None
+    try:
+        from neurosync.selflearn import SelfLearningLayer
+
+        selflearn = SelfLearningLayer(db)
+        logger.info("Self-Learning Layer initialized")
+    except Exception:
+        logger.debug("Self-Learning Layer init failed", exc_info=True)
+
     # Atomic commit — all or nothing
     global _intelligence, _calibration
     _config = config
@@ -577,6 +626,7 @@ def _init() -> None:
     _user_model = user_model
     _retrieval = retrieval
     _intelligence = intelligence
+    _selflearn = selflearn
 
 
 def _ensure_session(project: str = "", branch: str = "") -> str:
@@ -609,13 +659,13 @@ def _rotate_session() -> None:
     global _current_session_id, _correction_count, _assertion_count, _correction_topics, _git_observer, _session_started_at, _last_episode_time
     if _current_session_id is None:
         return
+    ending_session_id = _current_session_id
     # Capture git delta and end the old session
     try:
         if _git_observer and _episodic:
-            session_id = _current_session_id
             for event in _git_observer.capture_delta():
                 _episodic.record_episode(
-                    session_id=session_id,
+                    session_id=ending_session_id,
                     event_type="observed",
                     content=event.get("content", ""),
                     files_touched=event.get("files", []),
@@ -623,9 +673,15 @@ def _rotate_session() -> None:
                     signal_weight=event.get("signal_weight", 0.3),
                 )
         if _episodic:
-            _episodic.end_session(_current_session_id)
+            _episodic.end_session(ending_session_id)
     except Exception:
         logger.debug("Error during session rotation cleanup", exc_info=True)
+    # Finalise self-learning outcomes before clearing session state
+    if _selflearn:
+        try:
+            _selflearn.on_session_end(ending_session_id)
+        except Exception:
+            logger.debug("Self-learning session end failed", exc_info=True)
     # Reset per-session state
     _current_session_id = None
     _session_started_at = None
@@ -892,6 +948,33 @@ def handle_recall(params: dict[str, Any]) -> dict[str, Any]:
                 }
         except Exception:
             logger.debug("RCN enrichment failed", exc_info=True)
+    # Self-learning: log recall event and update usefulness recall_counts
+    if _selflearn and _current_session_id:
+        try:
+            theory_ids = []
+            if result.get("primary"):
+                t_id = result["primary"].get("id", "")
+                if t_id:
+                    theory_ids.append(t_id)
+            for sup in result.get("supporting", []):
+                t_id = sup.get("id", "")
+                if t_id:
+                    theory_ids.append(t_id)
+            episode_ids = [ep.get("id", "") for ep in result.get("recent_episodes", []) if ep.get("id")]
+            tokens_used = sum(
+                len(t.get("content", "")) // 4
+                for t in [result.get("primary")] + result.get("supporting", [])
+                if t
+            )
+            _selflearn.on_recall(
+                session_id=_current_session_id,
+                theory_ids=theory_ids,
+                episode_ids=episode_ids,
+                tokens_used=tokens_used,
+                context=context,
+            )
+        except Exception:
+            logger.debug("Self-learning recall tracking failed", exc_info=True)
     return _add_protocol_hint("neurosync_recall", result)
 
 
@@ -1266,6 +1349,12 @@ def handle_correct(params: dict[str, Any]) -> dict[str, Any]:
             _calibration.record_outcome(domains=domains, was_correct=False)
         except Exception:
             logger.debug("RCN outcome recording failed", exc_info=True)
+    # Self-learning: apply immediate correction penalty to recalled theories
+    if _selflearn and _current_session_id:
+        try:
+            _selflearn.on_correction(_current_session_id)
+        except Exception:
+            logger.debug("Self-learning correction tracking failed", exc_info=True)
     auto_result = _try_auto_consolidate()
     if auto_result:
         result["auto_consolidation"] = auto_result
@@ -1641,6 +1730,98 @@ def handle_poll(params: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+_INSIGHTS_CATEGORY_TO_TYPE: dict[str, str] = {
+    "work_patterns": "work_pattern",
+    "file_network": "file_network",
+    "event_flows": "event_flow",
+    "signal_predictor": "signal_predictor",
+    "learning": "learning_velocity",
+}
+_INSIGHTS_WARNING_CATEGORIES: frozenset[str] = frozenset({
+    "fatigue_warning", "stuck_detection", "plateau_detection",
+})
+_INSIGHTS_PROFILE_CATEGORIES: frozenset[str] = frozenset({"work_patterns", "learning", "all"})
+
+
+def handle_insights(params: dict[str, Any]) -> dict[str, Any]:
+    """Query developer intelligence insights from the background analyzer results."""
+    _require_init(_db)
+
+    category = params.get("category", "all") or "all"
+    project = params.get("project", "") or ""
+
+    try:
+        limit = min(int(params.get("limit", 10) or 10), 50)
+    except (TypeError, ValueError):
+        limit = 10
+
+    try:
+        min_confidence = float(params.get("min_confidence", 0.3) or 0.3)
+        min_confidence = max(0.0, min(1.0, min_confidence))
+    except (TypeError, ValueError):
+        min_confidence = 0.3
+
+    def _project_matches(r: dict[str, Any]) -> bool:
+        row_project = r.get("project") or ""
+        return not row_project or row_project == project
+
+    if category == "all":
+        rows = _db.list_insights(min_confidence=min_confidence, limit=limit)
+        if project:
+            rows = [r for r in rows if _project_matches(r)]
+    elif category == "warnings":
+        # Fetch more candidates so filtering by category still returns `limit` rows
+        candidates = _db.list_insights(min_confidence=min_confidence, limit=limit + 50)
+        rows = [r for r in candidates if r.get("category") in _INSIGHTS_WARNING_CATEGORIES]
+        if project:
+            rows = [r for r in rows if _project_matches(r)]
+        rows = rows[:limit]
+    else:
+        insight_type = _INSIGHTS_CATEGORY_TO_TYPE.get(category, category)
+        rows = _db.list_insights(
+            min_confidence=min_confidence,
+            insight_type=insight_type,
+            limit=limit,
+        )
+        if project:
+            rows = [r for r in rows if _project_matches(r)]
+
+    # Developer profile (only for relevant categories — avoids unnecessary DB read)
+    profile: dict[str, Any] = {}
+    if _intelligence and category in _INSIGHTS_PROFILE_CATEGORIES:
+        try:
+            profile = _intelligence.get_developer_profile()
+        except Exception:
+            logger.debug("handle_insights: get_developer_profile failed", exc_info=True)
+
+    # Engine stats
+    engine_stats: dict[str, Any] = {}
+    if _intelligence:
+        try:
+            engine_stats = _intelligence.get_stats()
+        except Exception:
+            logger.debug("handle_insights: get_stats failed", exc_info=True)
+
+    return {
+        "category": category,
+        "insights": [
+            {
+                "id": r["id"],
+                "type": r.get("insight_type", ""),
+                "category": r.get("category", ""),
+                "content": r.get("content", ""),
+                "confidence": round(r.get("confidence", 0), 3),
+                "updated_at": r.get("updated_at", ""),
+                "metadata": r.get("metadata", {}),
+            }
+            for r in rows
+        ],
+        "count": len(rows),
+        "developer_profile": profile,
+        "engine": engine_stats,
+    }
+
+
 _HANDLERS = {
     "neurosync_recall": handle_recall,
     "neurosync_record": handle_record,
@@ -1653,6 +1834,7 @@ _HANDLERS = {
     "neurosync_handoff": handle_handoff,
     "neurosync_poll": handle_poll,
     "neurosync_graph": handle_graph,
+    "neurosync_insights": handle_insights,
 }
 
 

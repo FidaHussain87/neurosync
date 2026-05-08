@@ -37,11 +37,17 @@ class IntelligenceEngine:
         self._register_default_analyzers()
 
     def _register_default_analyzers(self) -> None:
+        from neurosync.intelligence.analyzers.event_flows import EventFlowAnalyzer
         from neurosync.intelligence.analyzers.file_network import FileNetworkAnalyzer
+        from neurosync.intelligence.analyzers.learning_velocity import LearningVelocityAnalyzer
+        from neurosync.intelligence.analyzers.signal_predictor import SignalPredictorAnalyzer
         from neurosync.intelligence.analyzers.work_patterns import WorkPatternAnalyzer
 
         self._analyzers.append(WorkPatternAnalyzer())
         self._analyzers.append(FileNetworkAnalyzer())
+        self._analyzers.append(EventFlowAnalyzer())
+        self._analyzers.append(SignalPredictorAnalyzer())
+        self._analyzers.append(LearningVelocityAnalyzer())
 
     def register_analyzer(self, analyzer: BaseAnalyzer) -> None:
         self._analyzers.append(analyzer)

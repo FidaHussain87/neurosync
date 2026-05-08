@@ -13,7 +13,7 @@ class TestCLI:
             [sys.executable, "-m", "neurosync", "--version"],
             capture_output=True, text=True,
         )
-        assert "0.4.0" in result.stdout
+        assert "1.0.0" in result.stdout
 
     def test_help(self):
         result = subprocess.run(

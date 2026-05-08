@@ -34,11 +34,73 @@ Add to your MCP config:
 }
 ```
 
+## REST API Server (v1.0)
+
+NeuroSync ships a FastAPI REST server alongside the MCP stdio server.
+
+### Install API dependencies
+
+```bash
+pip install "neurosync[api]"
+# or everything at once:
+pip install "neurosync[all]"
+```
+
+### Start the server
+
+```bash
+neurosync serve-api                        # http://localhost:8000
+neurosync serve-api --host 0.0.0.0 --port 9000
+```
+
+Interactive OpenAPI docs at **http://localhost:8000/docs**.
+
+### API key setup
+
+On first start (bootstrap mode) no auth is required. Create your key:
+
+```bash
+curl -X POST http://localhost:8000/v1/api-keys \
+  -H "Content-Type: application/json" \
+  -d '{"name": "dev-key"}'
+# → {"id": "...", "key": "ns_abc123...", "name": "dev-key"}
+```
+
+All subsequent requests require `Authorization: Bearer ns_abc123...`.
+
+### Python SDK
+
+```python
+from neurosync.sdk import NeuroSync
+
+ns = NeuroSync(api_key="ns_abc123...", project="my-app", base_url="http://localhost:8000")
+ns.remember("always use WAL mode", importance=4)
+context = ns.recall()
+```
+
 ## Docker
+
+Single-command full stack deployment:
+
+```bash
+docker compose up                         # SQLite only (default)
+docker compose --profile postgres up      # + PostgreSQL backend
+docker compose --profile neo4j up        # + Neo4j graph
+```
+
+The `neurosync` service exposes port `8000`. Data is persisted in the `neurosync_data` named volume.
+
+**Override the DB backend at runtime:**
+
+```bash
+NEUROSYNC_DB_BACKEND=postgresql docker compose --profile postgres up
+```
+
+**Build and run manually:**
 
 ```bash
 docker build -t neurosync .
-docker run -v ~/.neurosync:/data neurosync
+docker run -p 8000:8000 -v ~/.neurosync:/data neurosync
 ```
 
 ## Automated Consolidation

@@ -463,4 +463,4 @@ class TestReplayPersistence:
 
     def test_schema_version_10(self, db):
         stats = db.stats()
-        assert stats["schema_version"] == 10
+        assert stats["schema_version"] == 11

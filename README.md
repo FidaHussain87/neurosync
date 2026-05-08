@@ -95,9 +95,9 @@ You work with AI  ──>  NeuroSync records what happened (episodes)
 
 ---
 
-## The 10 Tools
+## The 11 Tools
 
-NeuroSync connects to your AI assistant using MCP (a standard protocol). It provides 10 tools:
+NeuroSync connects to your AI assistant using MCP (a standard protocol). It provides 11 tools:
 
 | Tool | What it does | When it's used |
 |---|---|---|
@@ -110,7 +110,96 @@ NeuroSync connects to your AI assistant using MCP (a standard protocol). It prov
 | `neurosync_status` | "How's my memory doing?" | Health check |
 | `neurosync_theories` | "Show me what I've learned" | Browse/manage learned patterns |
 | `neurosync_consolidate` | "Review recent events and extract lessons" | Periodically (like studying) |
+| `neurosync_poll` | "Proactive warnings and predictions" | During long sessions |
 | `neurosync_graph` | "Show me the knowledge graph" | Query/sync Neo4j graph (optional) |
+
+---
+
+## REST API + Python SDK (v1.0)
+
+NeuroSync ships a full HTTP REST API and Python SDK — use it from any language, LLM framework, or CI pipeline without an MCP client.
+
+### Start the API server
+
+```bash
+pip install "neurosync[api]"
+neurosync serve-api              # starts at http://localhost:8000
+neurosync serve-api --port 9000  # custom port
+```
+
+Or with Docker (single command, full stack):
+
+```bash
+docker compose up                          # SQLite (default)
+docker compose --profile postgres up       # + PostgreSQL
+docker compose --profile neo4j up         # + Neo4j
+```
+
+### Python SDK
+
+```python
+from neurosync.sdk import NeuroSync
+
+ns = NeuroSync(api_key="ns_xxx", project="my-app")
+
+# Store a memory
+ns.remember("always use WAL mode for SQLite", importance=4)
+
+# Load memories at session start
+context = ns.recall(context="working on auth module")
+
+# Record what happened
+ns.record(events=[
+    {"type": "decision", "content": "chose JWT over sessions because stateless"},
+    {"type": "correction", "content": "don't use MD5 for hashing"},
+])
+
+# Search memories
+results = ns.query("how do we handle database connections?")
+
+# Record a correction
+ns.correct("wrong approach", "right approach")
+```
+
+**Async client:**
+
+```python
+from neurosync.sdk import AsyncNeuroSyncClient
+
+ns = AsyncNeuroSyncClient(api_key="ns_xxx", project="my-app")
+context = await ns.recall()
+```
+
+### API key management
+
+```bash
+# Create your first key (bootstrap — no auth needed until keys exist)
+curl -X POST http://localhost:8000/v1/api-keys -H "Content-Type: application/json" \
+  -d '{"name": "my-key"}'
+# → {"id": "...", "key": "ns_abc123...", "name": "my-key"}
+
+# All subsequent requests require: Authorization: Bearer ns_abc123...
+```
+
+### API endpoints
+
+All 11 MCP tools are available as `POST /v1/{tool}`:
+
+| Endpoint | Method |
+|---|---|
+| `/v1/recall` | POST |
+| `/v1/record` | POST |
+| `/v1/remember` | POST |
+| `/v1/query` | POST |
+| `/v1/correct` | POST |
+| `/v1/status` | GET / POST |
+| `/v1/theories` | POST |
+| `/v1/consolidate` | POST |
+| `/v1/handoff` | POST |
+| `/v1/poll` | POST |
+| `/v1/graph` | POST |
+
+Interactive docs at **http://localhost:8000/docs** (auto-generated OpenAPI).
 
 ---
 
