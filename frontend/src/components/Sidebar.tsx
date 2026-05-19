@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react';
-import type { Neo4jConfig, NodeType, NodeStats } from '../types';
+import { useEffect, useState, useRef } from 'react';
+import type { Neo4jConfig, NodeType, NodeStats, GraphData } from '../types';
 import { NODE_STYLES } from '../constants';
 import ConnectionForm from './ConnectionForm';
 import QueryRunner from './QueryRunner';
+import SurprisePanel from './SurprisePanel';
 import * as neo4jService from '../services/neo4j';
 
 const ALL_TYPES: NodeType[] = [
@@ -27,6 +28,7 @@ interface Props {
   onRunPrebuilt: (cypher: string, params?: Record<string, unknown>) => void;
   onRunCustom: (cypher: string) => void;
   onLoadOverview: () => void;
+  onVisualizeSurprise: (data: GraphData) => void;
   nodeCount: number;
   linkCount: number;
 }
@@ -39,6 +41,7 @@ export default function Sidebar({
   projects, projectFilter, onProjectChange,
   onRunPrebuilt, onRunCustom,
   onLoadOverview,
+  onVisualizeSurprise,
   nodeCount, linkCount,
 }: Props) {
   const [stats, setStats] = useState<NodeStats | null>(null);
@@ -110,19 +113,11 @@ export default function Sidebar({
 
           {/* Project filter */}
           {projects.length > 0 && (
-            <div className="border-b border-gray-800 pb-3">
-              <h3 className="text-xs font-medium text-gray-400 uppercase tracking-wider mb-2">Project</h3>
-              <select
-                value={projectFilter}
-                onChange={e => onProjectChange(e.target.value)}
-                className="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1.5 text-sm text-gray-200 focus:border-blue-500 focus:outline-none"
-              >
-                <option value="">All projects</option>
-                {projects.map(p => (
-                  <option key={p} value={p}>{p}</option>
-                ))}
-              </select>
-            </div>
+            <ProjectDropdown
+              projects={projects}
+              value={projectFilter}
+              onChange={onProjectChange}
+            />
           )}
 
           {/* Node type filters */}
@@ -159,6 +154,9 @@ export default function Sidebar({
             disabled={!connected}
           />
 
+          {/* Surprise Detection */}
+          <SurprisePanel onVisualizeSurprise={onVisualizeSurprise} />
+
           {/* Stats */}
           <div>
             <h3 className="text-xs font-medium text-gray-400 uppercase tracking-wider mb-2">Current View</h3>
@@ -187,5 +185,72 @@ export default function Sidebar({
         </>
       )}
     </aside>
+  );
+}
+
+function ProjectDropdown({ projects, value, onChange }: { projects: string[]; value: string; onChange: (v: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const handleClick = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, [open]);
+
+  const displayLabel = value || 'All projects';
+
+  return (
+    <div className="border-b border-gray-800 pb-3">
+      <h3 className="text-xs font-medium text-gray-400 uppercase tracking-wider mb-2">Project</h3>
+      <div ref={ref} className="relative">
+        <button
+          type="button"
+          onClick={() => setOpen(!open)}
+          className="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1.5 text-sm text-gray-200 text-left flex items-center justify-between focus:border-blue-500 focus:outline-none"
+        >
+          <span className="truncate">{displayLabel}</span>
+          <svg
+            className={`w-3.5 h-3.5 text-gray-500 flex-shrink-0 ml-1 transition-transform ${open ? 'rotate-180' : ''}`}
+            fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}
+          >
+            <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+          </svg>
+        </button>
+
+        {open && (
+          <div className="absolute z-20 mt-1 w-full bg-gray-900 border border-gray-700 rounded shadow-lg max-h-52 overflow-y-auto scrollbar-hidden">
+            <button
+              onClick={() => { onChange(''); setOpen(false); }}
+              className={`w-full text-left px-2.5 py-1.5 text-sm transition-colors ${
+                !value
+                  ? 'bg-purple-600/20 text-purple-300'
+                  : 'text-gray-300 hover:bg-gray-800 hover:text-gray-100'
+              }`}
+            >
+              All projects
+            </button>
+            {projects.map(p => (
+              <button
+                key={p}
+                onClick={() => { onChange(p); setOpen(false); }}
+                className={`w-full text-left px-2.5 py-1.5 text-sm transition-colors ${
+                  p === value
+                    ? 'bg-purple-600/20 text-purple-300'
+                    : 'text-gray-300 hover:bg-gray-800 hover:text-gray-100'
+                }`}
+              >
+                {p}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
   );
 }

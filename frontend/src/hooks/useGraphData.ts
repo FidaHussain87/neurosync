@@ -103,18 +103,37 @@ export function useGraphData() {
     if (fullReplace) setViewResetCount(c => c + 1);
   }, []);
 
+  // Fetch all distinct projects from Neo4j (not just from loaded nodes)
+  const [projects, setProjects] = useState<string[]>([]);
+
+  const refreshProjects = useCallback(async () => {
+    try {
+      const allProjects = await neo4jService.fetchProjects();
+      setProjects(allProjects);
+    } catch {
+      // Fallback: extract from currently loaded nodes
+      const projectSet = new Set<string>();
+      for (const n of fullDataRef.current.nodes) {
+        const p = (n.properties.project as string) ?? '';
+        if (p) projectSet.add(p);
+      }
+      setProjects(Array.from(projectSet).sort());
+    }
+  }, []);
+
   const loadOverview = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
       const data = await neo4jService.fetchOverview();
       updateData(data, true);
+      refreshProjects();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load overview');
     } finally {
       setLoading(false);
     }
-  }, [updateData]);
+  }, [updateData, refreshProjects]);
 
   const expandNode = useCallback(async (nodeId: string, label: string) => {
     setLoading(true);
@@ -164,15 +183,11 @@ export function useGraphData() {
     }
   }, [updateData]);
 
-  // Extract unique project names from Session nodes
-  const projects = useMemo((): string[] => {
-    const projectSet = new Set<string>();
-    for (const n of graphData.nodes) {
-      const p = (n.properties.project as string) ?? '';
-      if (p) projectSet.add(p);
-    }
-    return Array.from(projectSet).sort();
-  }, [graphData.nodes]);
+  const injectGraphData = useCallback((data: GraphData) => {
+    if (data.nodes.length === 0) return;
+    const merged = mergeGraphData(fullDataRef.current, data);
+    updateData(merged, false);
+  }, [updateData]);
 
   const filteredData = useMemo((): GraphData => {
     let nodes = graphData.nodes;
@@ -244,6 +259,7 @@ export function useGraphData() {
     expandNode,
     runPrebuilt,
     runCustomQuery,
+    injectGraphData,
     viewResetCount,
   };
 }

@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
-import type { GraphNode } from './types';
+import type { GraphNode, GraphData } from './types';
 import type { GraphCanvasHandle } from './gestures/types';
 import { useNeo4jConnection } from './hooks/useNeo4jConnection';
 import { useGraphData } from './hooks/useGraphData';
@@ -52,6 +52,13 @@ export default function App() {
     setSelectedNode(null);
   }, []);
 
+  const handleVisualizeSurprise = useCallback(
+    (data: GraphData) => {
+      graph.injectGraphData(data);
+    },
+    [graph.injectGraphData],
+  );
+
   return (
     <div className="flex h-screen bg-gray-950 text-gray-100 relative">
       <Sidebar
@@ -71,6 +78,7 @@ export default function App() {
         onRunPrebuilt={graph.runPrebuilt}
         onRunCustom={graph.runCustomQuery}
         onLoadOverview={graph.loadOverview}
+        onVisualizeSurprise={handleVisualizeSurprise}
         nodeCount={graph.filteredData.nodes.length}
         linkCount={graph.filteredData.links.length}
       />

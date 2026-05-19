@@ -298,7 +298,6 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas({ 
 
     sceneInitRef.current = true;
     scene.background = new THREE.Color('#050810');
-    scene.fog = new THREE.FogExp2(0x050810, 0.00015);
 
     const starField = createStarField(2000, 4000);
     starFieldRef.current = starField;
@@ -377,15 +376,9 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas({ 
     try { fg.d3ReheatSimulation(); } catch { /* layout may not be ready */ }
   }, [hasData]);
 
-  // ── Adapt fog density and starfield scale to graph extent ──
+  // ── Adapt starfield scale to graph extent ──
   useEffect(() => {
     if (!hasData || !sceneInitRef.current) return;
-    const fg = fgRef.current;
-    if (!fg) return;
-
-    let scene: THREE.Scene | undefined;
-    try { scene = fg.scene() as THREE.Scene; } catch { return; }
-    if (!scene || !scene.fog) return;
 
     let maxR = 0;
     for (const n of graphData.nodes) {
@@ -394,9 +387,6 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas({ 
       if (r > maxR) maxR = r;
     }
     if (maxR < 100) maxR = 100;
-
-    const fog = scene.fog as THREE.FogExp2;
-    fog.density = Math.sqrt(-Math.log(0.05)) / (maxR * 12);
 
     const starField = starFieldRef.current;
     if (starField) {
@@ -564,10 +554,9 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas({ 
       });
     }
 
-    const camDist = cameraDistRef.current;
     const selectedId = selectedNodeIdRef.current;
 
-    // Per-node: breathing, tier fading, selection ring
+    // Per-node: breathing + selection ring
     (graphData.nodes as any[]).forEach((node: any) => {
       const obj = node.__threeObj as THREE.Group | undefined;
       if (!obj) return;
@@ -591,24 +580,10 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas({ 
         const breathe = 1 + Math.sin(t * 1.2 + phase) * 0.04;
         obj.scale.set(breathe, breathe, breathe);
       }
-      // ── Tier 3: zoom-dependent fade ──
+      // ── Tier 3: breathing only (always fully visible) ──
       else {
         const breathe = 1 + Math.sin(t * 1.2 + phase) * 0.04;
         obj.scale.set(breathe, breathe, breathe);
-
-        // Fade: full opacity at <=800, dim to minimum at >=3000 (always remain visible)
-        const fadeFactor = camDist <= 800 ? 1 : camDist >= 3000 ? 0.5 : 0.5 + 0.5 * (1 - (camDist - 800) / 2200);
-
-        // Update cloned materials
-        obj.visible = true;
-        for (const child of obj.children) {
-          if (child.userData.isDustGlow && (child as THREE.Sprite).material) {
-            ((child as THREE.Sprite).material as THREE.SpriteMaterial).opacity = 0.6 * fadeFactor;
-          }
-          if (child.userData.isDustCore && (child as THREE.Mesh).material) {
-            ((child as THREE.Mesh).material as THREE.MeshBasicMaterial).opacity = 0.95 * fadeFactor;
-          }
-        }
       }
 
       // Manage selection ring dynamically
@@ -691,35 +666,42 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas({ 
         const nx = node.x;
         const ny = node.y;
         const nz = node.z ?? 0;
-        const targetDist = 80;
+
+        // Use current camera distance but cap it to a comfortable range
+        const currentDist = cameraDistRef.current;
+        const targetDist = Math.max(150, Math.min(currentDist, 500));
 
         let cam: THREE.Camera | undefined;
         try { cam = fg.camera() as THREE.Camera; } catch { /* */ }
 
-        let dx = 1, dy = 0.5, dz = 1;
+        // Compute direction from node to camera (keep same viewing angle)
+        let dx = 0, dy = 0.4, dz = 1;
         if (cam) {
           dx = cam.position.x - nx;
           dy = cam.position.y - ny;
           dz = cam.position.z - nz;
           const len = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1;
           dx /= len; dy /= len; dz /= len;
-        } else {
-          const len = Math.sqrt(dx * dx + dy * dy + dz * dz);
-          dx /= len; dy /= len; dz /= len;
         }
+        const dirLen = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1;
+        dx /= dirLen; dy /= dirLen; dz /= dirLen;
 
+        // Move camera so the node is at center, maintaining viewing angle
         fg.cameraPosition(
           { x: nx + dx * targetDist, y: ny + dy * targetDist, z: nz + dz * targetDist },
           { x: nx, y: ny, z: nz },
-          1000,
+          600,
         );
 
-        // Update OrbitControls target so the node stays centered
-        let controls: any;
-        try { controls = fg.controls(); } catch { /* */ }
-        if (controls && controls.target) {
-          controls.target.set(nx, ny, nz);
-        }
+        // Set OrbitControls target after animation so node stays centered on orbit
+        setTimeout(() => {
+          try {
+            const controls = fg.controls() as any;
+            if (controls && controls.target) {
+              controls.target.set(nx, ny, nz);
+            }
+          } catch { /* */ }
+        }, 650);
       }
     },
     [onNodeClick],

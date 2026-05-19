@@ -30,6 +30,7 @@ from neurosync.quality import quality_warning
 from neurosync.replay import ReplayMatcher, detect_replay_from_session
 from neurosync.retrieval import RetrievalPipeline
 from neurosync.semantic import SemanticMemory
+from neurosync.surprises import SurpriseEngine
 from neurosync.topology import TopologicalHealthEngine
 from neurosync.user_model import UserModel
 from neurosync.vectorstore import VectorStore
@@ -426,6 +427,40 @@ TOOLS = [
                 },
             },
             "required": ["action"],
+        },
+    },
+    {
+        "name": "neurosync_surprises",
+        "description": (
+            "Detect surprising connections in your knowledge graph. Finds theories "
+            "unexpectedly linked across domains/projects, identifies 'god theories' "
+            "(highly connected hubs), and auto-generates research questions from "
+            "structural patterns. Zero LLM cost — pure graph analysis. "
+            "Use before design decisions or to discover non-obvious knowledge patterns."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "project": {
+                    "type": "string",
+                    "description": "Filter analysis to a specific project (optional)",
+                },
+                "top_surprises": {
+                    "type": "integer",
+                    "default": 5,
+                    "description": "Number of surprising connections to return (1-20)",
+                },
+                "top_questions": {
+                    "type": "integer",
+                    "default": 5,
+                    "description": "Number of auto-generated questions to return (1-10)",
+                },
+                "top_god": {
+                    "type": "integer",
+                    "default": 3,
+                    "description": "Number of god theories (highest degree) to return (1-10)",
+                },
+            },
         },
     },
 ]
@@ -1855,6 +1890,29 @@ def handle_insights(params: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def handle_surprises(params: dict[str, Any]) -> dict[str, Any]:
+    """Detect surprising connections and generate research questions."""
+    _require_init(_db)
+    project = params.get("project", "") or ""
+    if not project:
+        git_info = detect_git_info()
+        project = git_info.get("project", "")
+
+    top_surprises = min(max(int(params.get("top_surprises", 5) or 5), 1), 20)
+    top_questions = min(max(int(params.get("top_questions", 5) or 5), 1), 10)
+    top_god = min(max(int(params.get("top_god", 3) or 3), 1), 10)
+
+    engine = SurpriseEngine(_db)
+    report = engine.analyze(
+        project=project,
+        top_surprises=top_surprises,
+        top_questions=top_questions,
+        top_god=top_god,
+    )
+
+    return report.to_dict()
+
+
 _HANDLERS = {
     "neurosync_recall": handle_recall,
     "neurosync_record": handle_record,
@@ -1868,6 +1926,7 @@ _HANDLERS = {
     "neurosync_poll": handle_poll,
     "neurosync_graph": handle_graph,
     "neurosync_insights": handle_insights,
+    "neurosync_surprises": handle_surprises,
 }
 
 

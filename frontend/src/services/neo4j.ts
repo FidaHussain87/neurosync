@@ -325,3 +325,23 @@ export async function getStats(): Promise<NodeStats> {
     await session.close();
   }
 }
+
+export async function fetchProjects(): Promise<string[]> {
+  if (!driver) throw new Error('Not connected to Neo4j');
+  const session = driver.session({ database: currentConfig?.database ?? 'neo4j' });
+  try {
+    const result = await session.run(
+      `MATCH (s:Session)
+       WHERE s.project IS NOT NULL AND s.project <> ''
+       WITH s.project AS project
+       MATCH (t:Theory {active: true, scope: 'project', scope_qualifier: project})
+       WITH project, count(t) AS theories
+       WHERE theories >= 1
+       RETURN DISTINCT project
+       ORDER BY project`,
+    );
+    return result.records.map(r => r.get('project') as string);
+  } finally {
+    await session.close();
+  }
+}

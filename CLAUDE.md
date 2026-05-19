@@ -41,6 +41,7 @@ Call `neurosync_theories action=list` before significant decisions. Follow exist
 | `neurosync_insights` | Developer intelligence — peak hours, file hotspots, learning velocity |
 | `neurosync_status` | Health check |
 | `neurosync_consolidate` | Rarely — auto-consolidation handles this |
+| `neurosync_surprises` | Before design decisions — surprising cross-domain connections + auto-generated questions |
 | `neurosync_graph` | Neo4j knowledge graph (optional) |
 
 ## Signal weights (episode value multipliers)
